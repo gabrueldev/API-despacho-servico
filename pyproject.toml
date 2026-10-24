@@ -1,0 +1,41 @@
+[project]
+name = "despacha"
+version = "0.1.0"
+description = "API de despacho de serviços (guincho, entregas, manutenção)"
+requires-python = ">=3.12"
+license = "MIT"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["**/migrations/*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "DJ", "S", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # acentos em strings/comentários em português
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S106"]
+"**/tests/**" = ["S101", "S106"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+exclude = ["migrations/"]
+
+[[tool.mypy.overrides]]
+module = ["environ.*", "factory.*", "django_celery_beat.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "apps.*.tests.*"]
+disallow_untyped_defs = false
+
+[tool.django-stubs]
+django_settings_module = "config.settings"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py"]
+addopts = "--reuse-db -q"

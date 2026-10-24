@@ -1,0 +1,293 @@
+# Despacha — Plano de Arquitetura
+
+API de despacho de serviços (guincho, entregas, manutenção) em **Python / Django**, feita para demonstrar na prática: concorrência, filas, banco otimizado, segurança, testes e arquitetura em camadas.
+
+**Stack:** Django + Django REST Framework · PostgreSQL + PostGIS · Redis · Celery + Celery Beat · Nginx + Gunicorn · Docker Compose · GitHub Actions · pytest
+
+**Ordem sugerida para desenhar:** visão geral → ciclo de vida do chamado → banco → fluxos → camadas.
+
+---
+
+## 1. Visão geral da arquitetura
+
+```
+[Clientes: Painel web / App do prestador / Webhook externo]
+          │ HTTPS (JWT)
+          ▼
+   [Nginx]  ──►  [API Django + DRF (gunicorn, N instâncias, sem estado)]
+                     │            │              │
+                     ▼            ▼              ▼
+              [PostgreSQL     [Redis]        [Celery workers]
+               + PostGIS]     cache, fila,   notificações, recálculo,
+                              rate limit     fechamento financeiro
+                                                │
+                                                ▼
+                                     [Celery Beat: tarefas agendadas]
+```
+
+- **API sem estado:** permite subir várias instâncias atrás do Nginx (escala horizontal).
+- **Redis com 4 papéis:** broker do Celery, cache, contador de rate limit e **última posição dos prestadores** (escrita quente fora do Postgres).
+- **Celery:** tudo que é lento sai do request (notificar, recalcular, fechar período).
+- **Filas separadas no Celery:** `critica` (timeout de aceite), `notificacoes` e `pesada` (fechamento, flush de localização), cada uma com seus workers. Assim, um fechamento demorado nunca atrasa um timeout.
+- **Pool de conexões:** pool nativo do psycopg 3 no Django 5.1+ (`OPTIONS={"pool": True}`), para não abrir uma conexão nova a cada request. PgBouncer é opcional se o número de instâncias crescer.
+
+---
+
+## 2. Ciclo de vida do chamado (máquina de estados)
+
+```
+ABERTO ──► DESPACHADO ──► ACEITO ──► A_CAMINHO ──► NO_LOCAL ──► EM_ATENDIMENTO ──► CONCLUIDO
+   │            │            │
+   │            └─(prestador recusa ou expira 2 min)─► ABERTO   (volta para a fila)
+   └──────────────────────────────────────────────────────► CANCELADO
+```
+
+- Toda transição passa por **um único serviço** (`ChamadoService.transicionar`), que valida se a transição é permitida.
+- Toda transição gera um registro em **EventoChamado** (histórico / auditoria).
+- Se o prestador não aceitar em **2 minutos**, uma tarefa Celery devolve o chamado para `ABERTO`. A tarefa usa um **UPDATE condicional**, sem trava e em uma única query:
+  `UPDATE chamado SET status='ABERTO', version=version+1 WHERE id=%s AND status='DESPACHADO' AND version=%s`.
+  Se o prestador aceitou aos 1:59, o UPDATE afeta 0 linhas e nada acontece. Com isso a tarefa já é idempotente.
+
+---
+
+## 3. Modelo de dados
+
+| Tabela | Campos principais |
+|---|---|
+| **Usuario** | id, email, senha_hash, papel (ADMIN, ATENDENTE, DESPACHANTE, PRESTADOR, FINANCEIRO), ativo |
+| **Cliente** (contratante, ex.: proteção veicular) | id, nome, cnpj, tabela_precos_id |
+| **TabelaPrecos** | id, nome, valor_saida, valor_km_excedente, km_franquia, valor_hora_espera |
+| **Prestador** | id, usuario_id (1:1), nome, telefone, disponivel, localizacao (Point/PostGIS), atualizado_em |
+| **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), valor_previsto, valor_final, criado_em, atualizado_em, **concluido_em**, **rastreio_token** (único), **rastreio_expira_em**, **version** |
+| **ItemValor** | id, chamado_id, tipo (SAIDA, KM_EXCEDENTE, PEDAGIO, ESPERA, ADICIONAL), descricao, quantidade, valor_unitario, total |
+| **EventoChamado** | id, chamado_id, usuario_id, de_status, para_status, dados (JSON), criado_em |
+| **Fechamento** | id, tipo (CLIENTE / PRESTADOR), cliente_id (opcional), prestador_id (opcional), periodo_inicio, periodo_fim, total, status. `CHECK`: exatamente um dos dois preenchido. Os dois são FKs reais, então permitem índice e JOIN. |
+| **FechamentoItem** | fechamento_id, chamado_id, valor |
+| **IdempotencyKey** | usuario_id + chave (**únicos juntos**), hash_requisicao, status_code, resposta_salva, criado_em |
+
+**Relações:** Cliente 1—N Chamado · Prestador 1—N Chamado · Chamado 1—N ItemValor · Chamado 1—N EventoChamado · Fechamento 1—N FechamentoItem · Cliente N—1 TabelaPrecos.
+
+### Índices
+
+- `Chamado(status, criado_em, id)` → listagem por status. O `id` no fim serve de desempate para a **paginação por cursor**, e a ordenação da API é sempre `(criado_em, id)`.
+- **Índice parcial** `Chamado(criado_em, id) WHERE status NOT IN ('CONCLUIDO','CANCELADO')` → fila e painel operacional. Fica pequeno porque a maioria dos chamados já terminou.
+- `Chamado(prestador_id, status)` → "meus chamados"
+- `Chamado(cliente_id, concluido_em)` e `Chamado(prestador_id, concluido_em)` → fechamento. O período é filtrado pela data de conclusão, não pela de criação.
+- `Chamado(rastreio_token)` único → consulta pública de rastreio em O(log n)
+- **GiST parcial** `Prestador(localizacao) WHERE disponivel = true` → proximidade só entre prestadores livres, num índice só. Dois índices separados (GiST + parcial em `disponivel`) não se combinam bem.
+- `EventoChamado(chamado_id, criado_em)` → histórico no detalhe do chamado
+- **BRIN** em `IdempotencyKey(criado_em)` e `EventoChamado(criado_em)` → limpeza e relatórios por data em tabelas que só recebem inserção, com um índice minúsculo
+
+Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta e ocupam espaço. Validar com `EXPLAIN ANALYZE`.
+
+---
+
+## 4. Fluxos principais
+
+### Fluxo A — Abrir chamado
+1. Atendente faz `POST /chamados` com o header `Idempotency-Key`.
+2. API valida, cria o chamado como `ABERTO`, calcula o `valor_previsto` pela tabela de preços do cliente e registra o evento.
+3. Responde **201** imediatamente.
+4. Em segundo plano, o Celery sugere os prestadores mais próximos e notifica.
+
+### Fluxo B — Despachar (concorrência)
+1. Dois despachantes tentam despachar o mesmo chamado ao mesmo tempo.
+2. Dentro de `transaction.atomic()`, a API faz `select_for_update(nowait=True)` no chamado e no prestador, **sempre nessa ordem** para evitar deadlock.
+3. O primeiro trava as linhas, valida e muda para `DESPACHADO`.
+4. O segundo **não fica esperando**: o Postgres devolve `LockNotAvailable` na hora e a API responde **409 Conflict**. Se ele chegar depois do commit, encontra o status já alterado e também recebe 409. Sem espera, nenhum worker do gunicorn nem conexão do pool fica parado aguardando trava.
+5. Após o commit (`transaction.on_commit`), o Celery agenda o timeout de 2 minutos na fila `critica`.
+
+### Fluxo C — Atualizar localização do prestador
+1. O app envia `POST /prestadores/me/localizacao` a cada ~15 s (rota com **rate limit**).
+2. A posição vai **só para o Redis** (hash `prestador:{id}` com lat, lng e timestamp). O request não toca o Postgres e responde em ~1 ms.
+3. A cada **60 s**, uma tarefa do Beat (fila `pesada`) grava no Postgres, num único `UPDATE ... FROM (VALUES ...)`, só as posições que mudaram. Isso transforma milhares de escritas por minuto em uma.
+4. O rastreio lê a posição do Redis. A busca por proximidade usa o PostGIS, com posição de no máximo ~60 s atrás, o que é irrelevante num raio de 30 km.
+
+### Fluxo D — Concluir e fechar
+1. Ao concluir, o prestador lança os itens (pedágio, espera, adicionais). O `valor_final` é recalculado com `SUM` no banco, numa query só, e gravado no chamado (desnormalizado para leitura rápida).
+2. No fim do período, o **Celery Beat** gera os fechamentos por cliente (o que cobrar) e por prestador (o que repassar). A agregação é feita no SQL (`GROUP BY` + `SUM`), não em Python, e os itens entram com `bulk_create`. Uma restrição única em `(tipo, cliente_id/prestador_id, periodo_inicio)` impede fechamento duplicado se a tarefa rodar duas vezes.
+
+---
+
+## 5. Decisões técnicas (o que explicar na entrevista)
+
+1. **Concorrência no despacho:** trava pessimista (`select_for_update(nowait=True)`), porque o conflito é raro mas precisa ser 100% correto. Com `nowait`, quem perde recebe 409 na hora em vez de segurar conexão esperando. O campo `version` é usado pela trava otimista nas tarefas em segundo plano (UPDATE condicional no timeout de aceite).
+2. **Idempotência:** com `Idempotency-Key`, se o cliente reenviar a requisição por falha de rede, o chamado não é criado duas vezes. A mesma chave com corpo diferente (`hash_requisicao`) retorna 422. As chaves expiram em 24 h e uma tarefa do Beat as apaga, para a tabela não crescer. Tarefas Celery também são idempotentes.
+3. **Retry com backoff:** notificações com falha são reenviadas com intervalo crescente.
+4. **Sem N+1:** listagens usam `select_related("cliente", "prestador")` e `prefetch_related("itens")`; testes com `assertNumQueries` garantem o número de queries.
+5. **Dinheiro em `Decimal`:** nunca `float`; cálculo feito no back-end e testado.
+6. **Paginação por cursor:** estável e rápida em tabelas grandes, sem `COUNT(*)` nem `OFFSET`. A ordenação `(criado_em, id)` bate com os índices.
+7. **Cache com invalidação:** tabela de preços em cache, invalidada quando alguém a edita. A resposta pública de `/rastreio/{token}` fica em cache por 5 s, o que absorve vários associados abrindo o mesmo link.
+8. **Proximidade com índice:** `ST_DWithin` (usa o GiST) para filtrar o raio e o operador KNN `<->` para ordenar por distância. Nunca `ST_Distance(...) < raio` no `WHERE`, que não usa índice.
+9. **Serializers enxutos:** um serializer de listagem (poucos campos, `only()`) e outro de detalhe (itens + histórico).
+10. **Auditoria:** `EventoChamado` registra toda mudança de status e de valor.
+11. **Permissões por papel:** prestador só vê os próprios chamados; financeiro só vê fechamentos.
+12. **Celery bem configurado:** filas separadas por prioridade, `acks_late=True` e `worker_prefetch_multiplier=1` na fila `pesada` (uma tarefa longa não segura as outras), tarefas enfileiradas só após o commit (`transaction.on_commit`).
+13. **Segurança:** JWT com access curto + refresh, senhas com hash, segredos em variáveis de ambiente, validação de toda entrada.
+
+---
+
+## 6. Endpoints
+
+```
+POST   /auth/login                 -> access + refresh (JWT)
+POST   /auth/refresh
+
+POST   /chamados                   (atendente)   cria; aceita Idempotency-Key
+GET    /chamados?status=&cursor=   lista paginada
+GET    /chamados/{id}              detalhe + itens + histórico
+POST   /chamados/{id}/despachar    (despachante) {prestador_id}  -> 200 / 409
+POST   /chamados/{id}/aceitar      (prestador)
+POST   /chamados/{id}/recusar      (prestador)
+POST   /chamados/{id}/status       (prestador)   A_CAMINHO / NO_LOCAL / EM_ATENDIMENTO
+POST   /chamados/{id}/itens        lança pedágio, espera, adicionais
+POST   /chamados/{id}/concluir
+POST   /chamados/{id}/cancelar
+
+GET    /prestadores/proximos?lat=&lng=&raio=
+POST   /prestadores/me/localizacao (rate limit)
+GET    /rastreio/{token}           público, sem login (link para o associado)
+
+GET    /fechamentos?tipo=&periodo=
+POST   /fechamentos/gerar          (financeiro) -> dispara tarefa Celery
+GET    /health
+```
+
+---
+
+## 7. Estrutura do código (camadas)
+
+```
+despacha/
+├── config/              settings, urls, celery.py
+├── apps/
+│   ├── contas/          Usuario, papéis, JWT, permissões
+│   ├── chamados/
+│   │   ├── models.py
+│   │   ├── services.py      ← regra de negócio (transições, despacho, cálculo)
+│   │   ├── selectors.py     ← consultas otimizadas (sem N+1)
+│   │   ├── api/             serializers + views (finas: só chamam services)
+│   │   ├── tasks.py         Celery (timeout, notificação)
+│   │   └── tests/
+│   ├── prestadores/
+│   ├── precos/
+│   └── financeiro/
+├── core/                idempotência, paginação, erros padronizados
+├── docker-compose.yml   api, worker, beat, postgres (postgis), redis, nginx
+└── .github/workflows/ci.yml   lint + mypy + pytest
+```
+
+**Regra de ouro:** views só recebem e respondem; **services** decidem; **selectors** consultam.
+
+---
+
+## 8. Etapas de desenvolvimento
+
+1. **Base:** Docker Compose, Django + DRF, PostgreSQL/PostGIS, JWT, papéis e CI.
+2. **Domínio:** models, migrations, tabela de preços e criação de chamado com valor previsto.
+3. **Ciclo de vida:** transições de status, histórico e testes das regras.
+4. **Concorrência:** despacho com trava, teste simulando dois despachos simultâneos, idempotência.
+5. **Assíncrono:** Celery + Redis, timeout de aceite, notificações com retry, cache de localização.
+6. **Proximidade e rastreio:** busca por raio e link público de rastreio.
+7. **Financeiro:** itens, valor final e fechamentos agendados (Celery Beat).
+8. **Acabamento:** OpenAPI/Swagger, README com as decisões e os `EXPLAIN ANALYZE`, cobertura de testes.
+
+---
+
+## 9. Testes (o que cobrir)
+
+- **Unitários:** cálculo de valores (Decimal), transições válidas/inválidas da máquina de estados.
+- **Integração:** endpoints com banco real (pytest + PostgreSQL no Docker), permissões por papel.
+- **Concorrência:** duas threads tentando despachar o mesmo chamado → uma recebe 409 sem esperar a trava. Aceite aos 1:59 + timeout simultâneo → o chamado continua `ACEITO`.
+- **Performance:** `assertNumQueries` nas listagens, no detalhe e na geração de fechamento. Teste que confere, via `EXPLAIN`, se a busca por proximidade e a listagem usam índice (sem `Seq Scan`).
+- **Tarefas:** timeout de aceite, flush de localização e idempotência das tarefas Celery.
+
+---
+
+## 10. Decisões e premissas
+
+Padrões adotados para o MVP. Qualquer item pode ser trocado depois sem mudar a arquitetura.
+
+### Regras de negócio
+
+| # | Tema | Decisão |
+|---|---|---|
+| 1 | **Cálculo do valor** | `valor_saida` inclui **franquia de 40 km**. Acima disso, cobra `valor_km_excedente` por km. Espera cobrada por hora, **fracionada a cada 15 min**. Pedágio e adicionais lançados manualmente. Tudo em `Decimal`, arredondado para **2 casas** (`ROUND_HALF_UP`). |
+| 2 | **Distância** | **Linha reta** (PostGIS `ST_Distance` em geography). Interface `CalculadoraDistancia` permite plugar rota real (API de mapas) depois. |
+| 3 | **Escolha do prestador** | Prestadores **disponíveis** num **raio de 30 km**, ordenados por distância. O despachante escolhe na lista (sugestão automática = o mais próximo). |
+| 4 | **Cancelamento** | Sem taxa até `DESPACHADO`/`ACEITO`. A partir de `A_CAMINHO`, cobra **taxa de saída** (= `valor_saida` da tabela). `CONCLUIDO` não pode ser cancelado. |
+| 5 | **Fechamento** | **Mensal**, gerado automaticamente pelo Celery Beat no dia 1 às 03:00 (referente ao mês anterior). Também pode ser gerado manualmente via `POST /fechamentos/gerar`. Só entram chamados `CONCLUIDO` ou cancelados com taxa. |
+| 6 | **Tempos** | Aceite do prestador: **2 min** (senão volta para `ABERTO`). Envio de localização: **a cada 15 s**. Link de rastreio: válido até a **conclusão + 24 h**. |
+
+### Exemplo de cálculo (para testes)
+
+Tabela: saída R$ 250,00 · km excedente R$ 4,50 · franquia 40 km · espera R$ 60,00/h.
+Chamado de 58 km, 35 min de espera, pedágio R$ 12,40:
+
+| Item | Cálculo | Total |
+|---|---|---|
+| Saída | 1 × 250,00 | 250,00 |
+| Km excedente | (58 − 40) = 18 × 4,50 | 81,00 |
+| Espera | 35 min → 3 frações de 15 min = 0,75 h × 60,00 | 45,00 |
+| Pedágio | 1 × 12,40 | 12,40 |
+| **Total** | | **388,40** |
+
+### Integrações (simuladas no MVP)
+
+| # | Tema | Decisão |
+|---|---|---|
+| 7 | **Notificações** | Interface `Notificador` com implementação **`LogNotificador`** (grava em log/banco). WhatsApp Business API entra depois como outra implementação, sem mudar o resto. |
+| 8 | **Geocoding** | Fora do MVP. O chamado recebe **latitude/longitude** direto na criação. |
+
+### Técnico
+
+| # | Tema | Decisão |
+|---|---|---|
+| 9 | **Versões** | Python 3.12 · Django 5.x · DRF · Celery 5 · PostgreSQL 16 + PostGIS · Redis 7 |
+| 10 | **Autenticação** | `djangorestframework-simplejwt`. Access token **15 min**, refresh **7 dias**, com rotação de refresh. |
+| 11 | **Escopo** | **Só API** (sem front-end). Demonstração via **Swagger** (`drf-spectacular`) e testes. **Uma única assistência** no sistema (sem multiempresa). |
+| 12 | **Idioma** | Nomes de domínio em **português** (Chamado, Prestador, Fechamento); restante do código no padrão inglês. README em **português**, com resumo em **inglês**. |
+| 13 | **Dados de demo** | Comando `python manage.py seed` cria clientes, tabelas de preço, prestadores espalhados pelo mapa e chamados em vários status. |
+| 14 | **Deploy** | **Docker Compose local** como padrão. Opcional: deploy gratuito (ex.: Render ou Railway) para ter **link público no portfólio**. |
+| 15 | **Licença** | **MIT** |
+
+### Bibliotecas
+
+| Uso | Pacote |
+|---|---|
+| API | `djangorestframework` |
+| JWT | `djangorestframework-simplejwt` |
+| Documentação | `drf-spectacular` |
+| Geoespacial | `django.contrib.gis` + `psycopg[binary,pool]` |
+| Filas | `celery`, `redis`, `django-celery-beat` |
+| Rate limit | throttling do DRF (backend Redis via `django-redis`) |
+| Config | `django-environ` |
+| Testes | `pytest`, `pytest-django`, `factory-boy`, `pytest-cov` |
+| Qualidade | `ruff` (lint + format), `mypy` + `django-stubs` |
+| Servidor | `gunicorn` |
+
+### Variáveis de ambiente (`.env.example`)
+
+```
+DJANGO_SECRET_KEY=troque-isto
+DJANGO_DEBUG=true
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
+DATABASE_URL=postgis://despacha:despacha@db:5432/despacha
+REDIS_URL=redis://redis:6379/0
+JWT_ACCESS_MINUTES=15
+JWT_REFRESH_DAYS=7
+ACEITE_TIMEOUT_SEGUNDOS=120
+RAIO_BUSCA_KM=30
+RASTREIO_VALIDADE_HORAS=24
+LOCALIZACAO_FLUSH_SEGUNDOS=60
+IDEMPOTENCY_TTL_HORAS=24
+DB_POOL_MAX=10
+```
+
+### Fora do MVP (próximas versões)
+
+- WhatsApp Business API real e geocoding de endereços
+- Rota real (km por estrada) via API de mapas
+- Painel web / app do prestador
+- Avaliação de prestadores, antifraude e indicadores
+- Multiempresa (várias assistências)

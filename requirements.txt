@@ -1,0 +1,10 @@
+Django~=5.2.0
+djangorestframework~=3.16.0
+djangorestframework-simplejwt~=5.5.0
+drf-spectacular~=0.28.0
+psycopg[binary,pool]~=3.2.0
+celery[redis]~=5.5.0
+django-celery-beat~=2.8.0
+django-redis~=5.4.0
+django-environ~=0.12.0
+gunicorn~=23.0
