@@ -7,6 +7,7 @@ from rest_framework.permissions import BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
+from rest_framework.views import APIView
 
 from apps.contas.models import Papel
 from apps.contas.permissions import tem_papel
@@ -14,14 +15,20 @@ from apps.contas.permissions import tem_papel
 from .. import selectors, services
 from ..models import Chamado, Status
 from .serializers import (
+    AvancarSerializer,
+    CancelarSerializer,
     ChamadoCriadoSerializer,
     ChamadoCriarSerializer,
     ChamadoDetalheSerializer,
+    ChamadoEstadoSerializer,
     ChamadoListaSerializer,
+    RecusarSerializer,
 )
 
 PODE_VER = tem_papel(Papel.ATENDENTE, Papel.DESPACHANTE, Papel.PRESTADOR)
 PODE_CRIAR = tem_papel(Papel.ATENDENTE)
+SO_PRESTADOR = tem_papel(Papel.PRESTADOR)
+PODE_CANCELAR = tem_papel(Papel.ATENDENTE, Papel.DESPACHANTE)
 
 
 class ChamadoListaView(generics.ListCreateAPIView[Chamado]):
@@ -59,3 +66,61 @@ class ChamadoDetalheView(generics.RetrieveAPIView[Chamado]):
 
     def get_queryset(self) -> Any:
         return selectors.detalhe_chamados(self.request.user)  # type: ignore[arg-type]
+
+
+def _estado(chamado: Chamado) -> Response:
+    return Response(ChamadoEstadoSerializer(chamado).data)
+
+
+def _validar(serializer_class: type[BaseSerializer[Any]], request: Request) -> dict[str, Any]:
+    serializer = serializer_class(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return serializer.validated_data  # type: ignore[no-any-return]
+
+
+class AceitarView(APIView):
+    permission_classes = [SO_PRESTADOR]
+
+    @extend_schema(request=None, responses=ChamadoEstadoSerializer)
+    def post(self, request: Request, pk: int) -> Response:
+        return _estado(services.aceitar(usuario=request.user, chamado_id=pk))  # type: ignore[arg-type]
+
+
+class RecusarView(APIView):
+    permission_classes = [SO_PRESTADOR]
+
+    @extend_schema(request=RecusarSerializer, responses=ChamadoEstadoSerializer)
+    def post(self, request: Request, pk: int) -> Response:
+        dados = _validar(RecusarSerializer, request)
+        return _estado(services.recusar(usuario=request.user, chamado_id=pk, **dados))  # type: ignore[arg-type]
+
+
+class AvancarView(APIView):
+    permission_classes = [SO_PRESTADOR]
+
+    @extend_schema(request=AvancarSerializer, responses=ChamadoEstadoSerializer)
+    def post(self, request: Request, pk: int) -> Response:
+        dados = _validar(AvancarSerializer, request)
+        chamado = services.avancar(
+            usuario=request.user,  # type: ignore[arg-type]
+            chamado_id=pk,
+            status=Status(dados["status"]),
+        )
+        return _estado(chamado)
+
+
+class ConcluirView(APIView):
+    permission_classes = [SO_PRESTADOR]
+
+    @extend_schema(request=None, responses=ChamadoEstadoSerializer)
+    def post(self, request: Request, pk: int) -> Response:
+        return _estado(services.concluir(usuario=request.user, chamado_id=pk))  # type: ignore[arg-type]
+
+
+class CancelarView(APIView):
+    permission_classes = [PODE_CANCELAR]
+
+    @extend_schema(request=CancelarSerializer, responses=ChamadoEstadoSerializer)
+    def post(self, request: Request, pk: int) -> Response:
+        dados = _validar(CancelarSerializer, request)
+        return _estado(services.cancelar(usuario=request.user, chamado_id=pk, **dados))  # type: ignore[arg-type]

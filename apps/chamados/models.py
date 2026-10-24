@@ -55,7 +55,8 @@ class Chamado(models.Model):
     valor_final = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     criado_em = models.DateTimeField(auto_now_add=True)
     atualizado_em = models.DateTimeField(auto_now=True)
-    concluido_em = models.DateTimeField(null=True, blank=True)
+    # Conclusão ou cancelamento: é a data que conta para o fechamento do período.
+    encerrado_em = models.DateTimeField(null=True, blank=True)
     rastreio_token = models.CharField(
         max_length=32, unique=True, default=gerar_token_rastreio, editable=False
     )
@@ -72,8 +73,8 @@ class Chamado(models.Model):
                 name="chamado_ativos",
             ),
             models.Index(fields=["prestador", "criado_em", "id"], name="chamado_prestador_criado"),
-            models.Index(fields=["cliente", "concluido_em"], name="chamado_cliente_concluido"),
-            models.Index(fields=["prestador", "concluido_em"], name="chamado_prestador_concluido"),
+            models.Index(fields=["cliente", "encerrado_em"], name="chamado_cliente_encerrado"),
+            models.Index(fields=["prestador", "encerrado_em"], name="chamado_prestador_encerrado"),
         ]
         constraints = [
             models.CheckConstraint(

@@ -3,6 +3,7 @@ from decimal import Decimal
 import factory
 from django.contrib.gis.geos import Point
 
+from apps.chamados.models import Chamado, Status
 from apps.clientes.models import Cliente
 from apps.contas.models import Papel, Usuario
 from apps.precos.models import TabelaPrecos
@@ -48,3 +49,20 @@ class PrestadorFactory(factory.django.DjangoModelFactory[Prestador]):
     telefone = "11999990000"
     disponivel = True
     localizacao = Point(-46.63, -23.55, srid=4326)
+
+
+class ChamadoFactory(factory.django.DjangoModelFactory[Chamado]):
+    """Chamado direto no status desejado (sem passar pelo cálculo de distância)."""
+
+    class Meta:
+        model = Chamado
+
+    cliente = factory.SubFactory(ClienteFactory)
+    atendente = factory.SubFactory(UsuarioFactory, papel=Papel.ATENDENTE)
+    status = Status.ABERTO
+    placa = "ABC1D23"
+    endereco_origem = "Praça da Sé, São Paulo"
+    origem = Point(-46.6339, -23.5503, srid=4326)
+    destino = Point(-46.4731, -23.4356, srid=4326)
+    distancia_km = Decimal("58.00")
+    valor_previsto = Decimal("331.00")

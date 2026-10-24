@@ -37,13 +37,18 @@ API de despacho de serviços (guincho, entregas, manutenção) em **Python / Dja
 
 ```
 ABERTO ──► DESPACHADO ──► ACEITO ──► A_CAMINHO ──► NO_LOCAL ──► EM_ATENDIMENTO ──► CONCLUIDO
-   │            │            │
-   │            └─(prestador recusa ou expira 2 min)─► ABERTO   (volta para a fila)
-   └──────────────────────────────────────────────────────► CANCELADO
+                │
+                └─(prestador recusa ou expira 2 min)─► ABERTO   (volta para a fila)
+
+Qualquer status não encerrado ──► CANCELADO   (sem taxa até ACEITO; com taxa de saída a partir de A_CAMINHO)
 ```
 
-- Toda transição passa por **um único serviço** (`ChamadoService.transicionar`), que valida se a transição é permitida.
-- Toda transição gera um registro em **EventoChamado** (histórico / auditoria).
+- Toda transição passa por **um único serviço** (`services.transicionar`), que valida a transição na tabela `estados.TRANSICOES` (regras puras, testadas na matriz completa 8×8).
+- **Trava otimista nas transições:** lê só as colunas de estado e grava com `UPDATE ... WHERE id=%s AND version=%s` (`version = version + 1`). Uma query de escrita, sem `SELECT FOR UPDATE`; se outra operação passou na frente, 0 linhas → **409** sem gravar nada. A trava pessimista fica só no despacho (Fluxo B), onde também se reserva o prestador.
+- Toda transição gera um registro em **EventoChamado** (histórico / auditoria). Aceitar = **3 queries** (SELECT, UPDATE, INSERT do evento).
+- **Disponibilidade do prestador:** fica `false` no despacho e volta a `true` na recusa, no timeout, na conclusão e no cancelamento.
+- **Conclusão:** `valor_final = SUM(itens)` no banco; `encerrado_em = agora`; rastreio vale até `encerrado_em + 24 h`. Lançar item incrementa `version`, então um item que chegue durante a conclusão gera 409 em vez de um total errado.
+- **Cancelamento:** `valor_final` = taxa (ou 0,00), `encerrado_em = agora` e o rastreio expira na hora.
 - Se o prestador não aceitar em **2 minutos**, uma tarefa Celery devolve o chamado para `ABERTO`. A tarefa usa um **UPDATE condicional**, sem trava e em uma única query:
   `UPDATE chamado SET status='ABERTO', version=version+1 WHERE id=%s AND status='DESPACHADO' AND version=%s`.
   Se o prestador aceitou aos 1:59, o UPDATE afeta 0 linhas e nada acontece. Com isso a tarefa já é idempotente.
@@ -58,7 +63,7 @@ ABERTO ──► DESPACHADO ──► ACEITO ──► A_CAMINHO ──► NO_LO
 | **Cliente** (contratante, ex.: proteção veicular) | id, nome, cnpj, tabela_precos_id |
 | **TabelaPrecos** | id, nome, valor_saida, valor_km_excedente, km_franquia, valor_hora_espera |
 | **Prestador** | id, usuario_id (1:1), nome, telefone, disponivel, localizacao (Point/PostGIS), atualizado_em |
-| **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), **distancia_km**, valor_previsto, valor_final, criado_em, atualizado_em, **concluido_em**, **rastreio_token** (único), **rastreio_expira_em**, **version** |
+| **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), **distancia_km**, valor_previsto, valor_final, criado_em, atualizado_em, **encerrado_em** (conclusão ou cancelamento), **rastreio_token** (único), **rastreio_expira_em**, **version** |
 | **ItemValor** | id, chamado_id, tipo (SAIDA, KM_EXCEDENTE, PEDAGIO, ESPERA, ADICIONAL, TAXA_CANCELAMENTO), descricao, quantidade, valor_unitario, total |
 | **EventoChamado** | id, chamado_id, usuario_id, de_status, para_status, dados (JSON), criado_em |
 | **Fechamento** | id, tipo (CLIENTE / PRESTADOR), cliente_id (opcional), prestador_id (opcional), periodo_inicio, periodo_fim, total, status. `CHECK`: exatamente um dos dois preenchido. Os dois são FKs reais, então permitem índice e JOIN. |
@@ -75,7 +80,7 @@ ABERTO ──► DESPACHADO ──► ACEITO ──► A_CAMINHO ──► NO_LO
 - `Chamado(prestador_id, criado_em, id)` → "meus chamados" já na ordem do cursor
 - FKs `cliente_id`, `prestador_id`, `atendente_id` **sem índice próprio** (`db_index=False`): os compostos acima já começam por elas, e cada índice a menos barateia INSERT/UPDATE.
 - `origem`/`destino` do chamado **sem GiST**: não há busca espacial em chamados.
-- `Chamado(cliente_id, concluido_em)` e `Chamado(prestador_id, concluido_em)` → fechamento. O período é filtrado pela data de conclusão, não pela de criação.
+- `Chamado(cliente_id, encerrado_em)` e `Chamado(prestador_id, encerrado_em)` → fechamento. O período é filtrado pela data de encerramento (conclusão ou cancelamento com taxa), não pela de criação.
 - `Chamado(rastreio_token)` único → consulta pública de rastreio em O(log n)
 - **GiST parcial** `Prestador(localizacao) WHERE disponivel = true` → proximidade só entre prestadores livres, num índice só. Dois índices separados (GiST + parcial em `disponivel`) não se combinam bem.
 - `EventoChamado(chamado_id, criado_em)` → histórico no detalhe do chamado

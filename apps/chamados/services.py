@@ -1,14 +1,23 @@
 from dataclasses import dataclass
+from datetime import timedelta
+from decimal import Decimal
+from typing import Any
 
+from django.conf import settings
 from django.contrib.gis.geos import Point
 from django.db import transaction
+from django.db.models import F, Sum
+from django.utils import timezone
 
 from apps.clientes.models import Cliente
 from apps.contas.models import Usuario
 from apps.precos import calculo
 from apps.precos.selectors import obter_tabela
-from core.exceptions import ErroDominio
+from apps.precos.tipos import TipoItem
+from apps.prestadores.models import Prestador
+from core.exceptions import Conflito, ErroDominio, NaoEncontrado
 
+from . import estados, selectors
 from .distancia import CalculadoraDistancia, calculadora_padrao
 from .models import Chamado, EventoChamado, ItemValor, Status
 
@@ -80,3 +89,173 @@ def criar_chamado(
         )
 
     return ChamadoCriado(chamado=chamado, itens=itens)
+
+
+# --- Ciclo de vida -----------------------------------------------------------------------------
+
+# Colunas que as ações de estado leem e devolvem: nada além disso sai do banco.
+CAMPOS_ESTADO = (
+    "id",
+    "status",
+    "version",
+    "prestador_id",
+    "cliente_id",
+    "valor_final",
+    "encerrado_em",
+)
+
+
+def _carregar(usuario: Usuario, chamado_id: int) -> Chamado:
+    chamado = (
+        selectors.chamados_visiveis(usuario).only(*CAMPOS_ESTADO).filter(pk=chamado_id).first()
+    )
+    if chamado is None:
+        raise NaoEncontrado("Chamado não encontrado.")
+    return chamado
+
+
+def _exigir_transicao(de: Status, para: Status) -> None:
+    if not estados.pode_transicionar(de, para):
+        raise ErroDominio(f"Transição {de} → {para} não permitida.", codigo="transicao_invalida")
+
+
+def transicionar(
+    chamado: Chamado,
+    para: Status,
+    *,
+    usuario: Usuario | None,
+    dados: dict[str, Any] | None = None,
+    **campos: Any,
+) -> Chamado:
+    """Único ponto que muda o status de um chamado.
+
+    Trava otimista: o UPDATE só acontece se `version` ainda for a lida. Uma query, sem
+    `SELECT ... FOR UPDATE`; se outra operação passou na frente, nada é gravado e vira 409.
+    """
+    de = Status(chamado.status)
+    _exigir_transicao(de, para)
+    agora = timezone.now()
+
+    with transaction.atomic(savepoint=False):
+        alterados = Chamado.objects.filter(pk=chamado.pk, version=chamado.version).update(
+            status=para, version=F("version") + 1, atualizado_em=agora, **campos
+        )
+        if alterados:
+            EventoChamado.objects.create(
+                chamado_id=chamado.pk,
+                usuario=usuario,
+                de_status=de,
+                para_status=para,
+                dados=dados or {},
+            )
+    # Fora do atomic: 0 linhas = nada gravado, e a transação de quem chamou continua usável
+    # (ex.: o timeout de aceite trata o 409 como "já resolvido" e segue).
+    if not alterados:
+        raise Conflito("O chamado foi alterado por outra operação. Recarregue e tente de novo.")
+
+    chamado.status = para
+    chamado.version += 1
+    chamado.atualizado_em = agora
+    for campo, valor in campos.items():
+        setattr(chamado, campo, valor)
+    return chamado
+
+
+def _liberar_prestador(prestador_id: int | None) -> None:
+    if prestador_id:
+        Prestador.objects.filter(pk=prestador_id).update(disponivel=True)
+
+
+def aceitar(*, usuario: Usuario, chamado_id: int) -> Chamado:
+    return transicionar(_carregar(usuario, chamado_id), Status.ACEITO, usuario=usuario)
+
+
+def recusar(*, usuario: Usuario, chamado_id: int, motivo: str = "") -> Chamado:
+    chamado = _carregar(usuario, chamado_id)
+    prestador_id = chamado.prestador_id
+    with transaction.atomic():
+        transicionar(
+            chamado,
+            Status.ABERTO,
+            usuario=usuario,
+            dados={"prestador_id": prestador_id, "motivo": motivo},
+            prestador_id=None,
+        )
+        _liberar_prestador(prestador_id)
+    return chamado
+
+
+def avancar(*, usuario: Usuario, chamado_id: int, status: Status) -> Chamado:
+    if status not in estados.AVANCOS_DO_PRESTADOR:
+        raise ErroDominio(
+            f"Use {', '.join(estados.AVANCOS_DO_PRESTADOR)}.", codigo="status_invalido"
+        )
+    return transicionar(_carregar(usuario, chamado_id), status, usuario=usuario)
+
+
+def concluir(*, usuario: Usuario, chamado_id: int) -> Chamado:
+    chamado = _carregar(usuario, chamado_id)
+    _exigir_transicao(Status(chamado.status), Status.CONCLUIDO)
+
+    # SUM no banco. Lançar item incrementa `version` (etapa 7), então um item que chegue
+    # entre esta soma e o UPDATE faz a conclusão falhar com 409 em vez de sair errada.
+    soma = ItemValor.objects.filter(chamado_id=chamado.pk).aggregate(total=Sum("total"))["total"]
+    valor_final = soma or Decimal("0.00")
+    agora = timezone.now()
+
+    with transaction.atomic():
+        transicionar(
+            chamado,
+            Status.CONCLUIDO,
+            usuario=usuario,
+            dados={"valor_final": str(valor_final)},
+            valor_final=valor_final,
+            encerrado_em=agora,
+            rastreio_expira_em=agora + timedelta(hours=settings.RASTREIO_VALIDADE_HORAS),
+        )
+        _liberar_prestador(chamado.prestador_id)
+    return chamado
+
+
+def cancelar(*, usuario: Usuario, chamado_id: int, motivo: str) -> Chamado:
+    chamado = _carregar(usuario, chamado_id)
+    de = Status(chamado.status)
+    _exigir_transicao(de, Status.CANCELADO)
+
+    taxa: calculo.ItemCalculado | None = None
+    if estados.cobra_taxa_cancelamento(de):
+        tabela_id = (
+            Cliente.objects.filter(pk=chamado.cliente_id)
+            .values_list("tabela_precos_id", flat=True)
+            .get()
+        )
+        taxa = calculo.ItemCalculado(
+            TipoItem.TAXA_CANCELAMENTO,
+            f"Taxa de saída (cancelado em {de.label.lower()})",
+            Decimal(1),
+            obter_tabela(tabela_id).valor_saida,
+        )
+    valor_final = taxa.total if taxa else Decimal("0.00")
+    agora = timezone.now()
+
+    with transaction.atomic():
+        transicionar(
+            chamado,
+            Status.CANCELADO,
+            usuario=usuario,
+            dados={"motivo": motivo, "taxa": str(valor_final)},
+            valor_final=valor_final,
+            encerrado_em=agora,
+            rastreio_expira_em=agora,
+        )
+        if taxa:
+            ItemValor.objects.create(
+                chamado_id=chamado.pk,
+                tipo=taxa.tipo,
+                descricao=taxa.descricao,
+                quantidade=taxa.quantidade,
+                valor_unitario=taxa.valor_unitario,
+                total=taxa.total,
+            )
+        _liberar_prestador(chamado.prestador_id)
+    return chamado

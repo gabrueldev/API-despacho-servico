@@ -5,7 +5,8 @@ from rest_framework import serializers
 
 from core.fields import PontoField
 
-from ..models import Chamado, EventoChamado, ItemValor
+from ..estados import AVANCOS_DO_PRESTADOR
+from ..models import Chamado, EventoChamado, ItemValor, Status
 
 # Antiga (ABC1234) ou Mercosul (ABC1D23); aceita com hífen/minúsculas e normaliza.
 PLACA_RE = re.compile(r"^[A-Z]{3}\d[A-Z0-9]\d{2}$")
@@ -90,7 +91,7 @@ class ChamadoDetalheSerializer(serializers.ModelSerializer[Chamado]):
             "rastreio_token",
             "criado_em",
             "atualizado_em",
-            "concluido_em",
+            "encerrado_em",
             "version",
             "itens",
             "eventos",
@@ -118,3 +119,25 @@ class ChamadoCriadoSerializer(serializers.ModelSerializer[Chamado]):
 
     def get_itens(self, obj: Chamado) -> list[dict[str, Any]]:
         return ItemValorSerializer(self.context["itens"], many=True).data  # type: ignore[return-value]
+
+
+class ChamadoEstadoSerializer(serializers.Serializer[Any]):
+    """Resposta das ações de ciclo de vida: só o que muda, já em memória."""
+
+    id = serializers.IntegerField()
+    status = serializers.ChoiceField(choices=Status.choices)
+    version = serializers.IntegerField()
+    valor_final = serializers.DecimalField(max_digits=12, decimal_places=2, allow_null=True)
+    encerrado_em = serializers.DateTimeField(allow_null=True)
+
+
+class RecusarSerializer(serializers.Serializer[Any]):
+    motivo = serializers.CharField(max_length=255, required=False, default="")
+
+
+class CancelarSerializer(serializers.Serializer[Any]):
+    motivo = serializers.CharField(max_length=255)
+
+
+class AvancarSerializer(serializers.Serializer[Any]):
+    status = serializers.ChoiceField(choices=[(s.value, s.label) for s in AVANCOS_DO_PRESTADOR])
