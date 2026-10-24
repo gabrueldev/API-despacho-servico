@@ -2,6 +2,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -134,7 +135,12 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "API de despacho de serviços (guincho, entregas, manutenção).",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
-    "ENUM_NAME_OVERRIDES": {"StatusChamadoEnum": "apps.chamados.models.Status"},
+    "ENUM_NAME_OVERRIDES": {
+        "StatusChamadoEnum": "apps.chamados.models.Status",
+        "TipoItemEnum": "apps.precos.tipos.TipoItem",
+        "TipoFechamentoEnum": "apps.financeiro.models.TipoFechamento",
+        "StatusFechamentoEnum": "apps.financeiro.models.StatusFechamento",
+    },
 }
 
 # Celery: filas separadas para um fechamento demorado nunca atrasar um timeout.
@@ -151,6 +157,7 @@ CELERY_TASK_ROUTES = {
     "core.tasks.notificar": {"queue": "notificacoes"},
     "core.tasks.limpar_idempotency_keys": {"queue": "pesada"},
     "apps.prestadores.tasks.*": {"queue": "pesada"},
+    "apps.financeiro.tasks.*": {"queue": "pesada"},
 }
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_TIMEZONE = TIME_ZONE
@@ -167,11 +174,18 @@ RASTREIO_VALIDADE_HORAS = env.int("RASTREIO_VALIDADE_HORAS", default=24)
 LOCALIZACAO_FLUSH_SEGUNDOS = env.int("LOCALIZACAO_FLUSH_SEGUNDOS", default=60)
 IDEMPOTENCY_TTL_HORAS = env.int("IDEMPOTENCY_TTL_HORAS", default=24)
 NOTIFICADOR = env("NOTIFICADOR", default="core.notificacoes.LogNotificador")
+# Quanto do valor_final de cada chamado vai para o prestador.
+REPASSE_PRESTADOR_PERCENTUAL = env.int("REPASSE_PRESTADOR_PERCENTUAL", default=100)
 
 CELERY_BEAT_SCHEDULE = {
     "gravar-localizacoes": {
         "task": "apps.prestadores.tasks.gravar_localizacoes",
         "schedule": float(LOCALIZACAO_FLUSH_SEGUNDOS),
+    },
+    # Dia 1 às 03:00 (horário de Brasília), referente ao mês anterior.
+    "gerar-fechamentos": {
+        "task": "apps.financeiro.tasks.gerar_fechamentos_mes_anterior",
+        "schedule": crontab(day_of_month="1", hour="3", minute="0"),
     },
     "limpar-idempotency-keys": {
         "task": "core.tasks.limpar_idempotency_keys",

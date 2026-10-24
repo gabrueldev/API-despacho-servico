@@ -13,6 +13,7 @@ from rest_framework.views import APIView
 
 from apps.contas.models import Papel, Usuario
 from apps.contas.permissions import tem_papel
+from apps.precos.tipos import TipoItem
 from core import idempotencia
 
 from .. import selectors, services
@@ -26,6 +27,8 @@ from .serializers import (
     ChamadoEstadoSerializer,
     ChamadoListaSerializer,
     DespacharSerializer,
+    ItemValorSerializer,
+    LancarItemSerializer,
     RastreioSerializer,
     RecusarSerializer,
 )
@@ -35,6 +38,7 @@ PODE_CRIAR = tem_papel(Papel.ATENDENTE)
 SO_PRESTADOR = tem_papel(Papel.PRESTADOR)
 PODE_CANCELAR = tem_papel(Papel.ATENDENTE, Papel.DESPACHANTE)
 PODE_DESPACHAR = tem_papel(Papel.DESPACHANTE)
+PODE_LANCAR_ITEM = tem_papel(Papel.PRESTADOR, Papel.DESPACHANTE)
 
 
 class ChamadoListaView(generics.ListCreateAPIView[Chamado]):
@@ -173,6 +177,25 @@ class CancelarView(APIView):
     def post(self, request: Request, pk: int) -> Response:
         dados = _validar(CancelarSerializer, request)
         return _estado(services.cancelar(usuario=request.user, chamado_id=pk, **dados))  # type: ignore[arg-type]
+
+
+class LancarItemView(APIView):
+    permission_classes = [PODE_LANCAR_ITEM]
+
+    @extend_schema(request=LancarItemSerializer, responses={201: ItemValorSerializer})
+    def post(self, request: Request, pk: int) -> Response:
+        dados = _validar(LancarItemSerializer, request)
+        item = services.lancar_item(
+            usuario=request.user,  # type: ignore[arg-type]
+            chamado_id=pk,
+            novo=services.NovoItem(
+                tipo=TipoItem(dados["tipo"]),
+                descricao=dados["descricao"],
+                valor=dados.get("valor"),
+                minutos=dados.get("minutos"),
+            ),
+        )
+        return Response(ItemValorSerializer(item).data, status=status.HTTP_201_CREATED)
 
 
 class RastreioView(APIView):

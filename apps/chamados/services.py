@@ -134,8 +134,20 @@ def transicionar(
     Trava otimista: o UPDATE só acontece se `version` ainda for a lida. Uma query, sem
     `SELECT ... FOR UPDATE`; se outra operação passou na frente, nada é gravado e vira 409.
     """
+    _exigir_transicao(Status(chamado.status), para)
+    return _gravar_com_version(chamado, para, usuario=usuario, dados=dados, **campos)
+
+
+def _gravar_com_version(
+    chamado: Chamado,
+    para: Status,
+    *,
+    usuario: Usuario | None,
+    dados: dict[str, Any] | None,
+    **campos: Any,
+) -> Chamado:
+    """UPDATE condicional por `version` + EventoChamado (auditoria de status e de valor)."""
     de = Status(chamado.status)
-    _exigir_transicao(de, para)
     agora = timezone.now()
 
     with transaction.atomic(savepoint=False):
@@ -351,3 +363,66 @@ def cancelar(*, usuario: Usuario, chamado_id: int, motivo: str) -> Chamado:
             )
         _liberar_prestador(chamado.prestador_id)
     return chamado
+
+
+# --- Itens de valor ----------------------------------------------------------------------------
+
+# Pedágio pode surgir no deslocamento; nada é lançado depois de encerrado.
+STATUS_ACEITAM_ITENS = (Status.A_CAMINHO, Status.NO_LOCAL, Status.EM_ATENDIMENTO)
+TIPOS_LANCAVEIS = (TipoItem.PEDAGIO, TipoItem.ESPERA, TipoItem.ADICIONAL)
+
+
+@dataclass(frozen=True, slots=True)
+class NovoItem:
+    tipo: TipoItem
+    descricao: str = ""
+    valor: Decimal | None = None  # PEDAGIO / ADICIONAL
+    minutos: int | None = None  # ESPERA
+
+
+def _calcular_item(chamado: Chamado, novo: NovoItem) -> calculo.ItemCalculado:
+    if novo.tipo == TipoItem.ESPERA:
+        tabela_id = (
+            Cliente.objects.filter(pk=chamado.cliente_id)
+            .values_list("tabela_precos_id", flat=True)
+            .get()
+        )
+        item = calculo.item_espera(obter_tabela(tabela_id), novo.minutos or 0)
+        if item is None:
+            raise ErroDominio("Informe os minutos de espera.", codigo="item_invalido")
+        return item
+    if not novo.valor or novo.valor <= 0:
+        raise ErroDominio("Informe um valor positivo.", codigo="item_invalido")
+    return calculo.ItemCalculado(
+        novo.tipo, novo.descricao or TipoItem(novo.tipo).label, Decimal(1), novo.valor
+    )
+
+
+def lancar_item(*, usuario: Usuario, chamado_id: int, novo: NovoItem) -> ItemValor:
+    """Incrementa `version`: uma conclusão que somou os itens antes deste falha com 409."""
+    if novo.tipo not in TIPOS_LANCAVEIS:
+        raise ErroDominio(f"Use {', '.join(TIPOS_LANCAVEIS)}.", codigo="item_invalido")
+    chamado = _carregar(usuario, chamado_id)
+    status = Status(chamado.status)
+    if status not in STATUS_ACEITAM_ITENS:
+        raise ErroDominio(
+            f"Itens só podem ser lançados em {', '.join(STATUS_ACEITAM_ITENS)}.",
+            codigo="status_nao_aceita_itens",
+        )
+    calculado = _calcular_item(chamado, novo)
+
+    with transaction.atomic():
+        _gravar_com_version(
+            chamado,
+            status,
+            usuario=usuario,
+            dados={"item": calculado.tipo, "total": str(calculado.total)},
+        )
+        return ItemValor.objects.create(
+            chamado_id=chamado.pk,
+            tipo=calculado.tipo,
+            descricao=calculado.descricao,
+            quantidade=calculado.quantidade,
+            valor_unitario=calculado.valor_unitario,
+            total=calculado.total,
+        )

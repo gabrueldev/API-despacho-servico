@@ -66,8 +66,8 @@ Qualquer status não encerrado ──► CANCELADO   (sem taxa até ACEITO; com 
 | **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), **distancia_km**, valor_previsto, valor_final, criado_em, atualizado_em, **encerrado_em** (conclusão ou cancelamento), **rastreio_token** (único), **rastreio_expira_em**, **version** |
 | **ItemValor** | id, chamado_id, tipo (SAIDA, KM_EXCEDENTE, PEDAGIO, ESPERA, ADICIONAL, TAXA_CANCELAMENTO), descricao, quantidade, valor_unitario, total |
 | **EventoChamado** | id, chamado_id, usuario_id, de_status, para_status, dados (JSON), criado_em |
-| **Fechamento** | id, tipo (CLIENTE / PRESTADOR), cliente_id (opcional), prestador_id (opcional), periodo_inicio, periodo_fim, total, status. `CHECK`: exatamente um dos dois preenchido. Os dois são FKs reais, então permitem índice e JOIN. |
-| **FechamentoItem** | fechamento_id, chamado_id, valor |
+| **Fechamento** | id, tipo (CLIENTE / PRESTADOR), cliente_id (opcional), prestador_id (opcional), periodo_inicio, periodo_fim, total, quantidade_chamados, status (GERADO / PAGO). `CHECK`: exatamente um dos dois preenchido, coerente com o tipo. Os dois são FKs reais, então permitem índice e JOIN. Únicos parciais `(cliente_id, periodo_inicio) WHERE tipo='CLIENTE'` e `(prestador_id, periodo_inicio) WHERE tipo='PRESTADOR'`. |
+| **FechamentoItem** | fechamento_id, chamado_id, valor — único `(fechamento_id, chamado_id)` |
 | **IdempotencyKey** | usuario_id + chave (**únicos juntos**), hash_requisicao (SHA-256 do corpo), status_code, resposta (JSON), criado_em |
 
 **Relações:** Cliente 1—N Chamado · Prestador 1—N Chamado · Chamado 1—N ItemValor · Chamado 1—N EventoChamado · Fechamento 1—N FechamentoItem · Cliente N—1 TabelaPrecos.
@@ -80,7 +80,7 @@ Qualquer status não encerrado ──► CANCELADO   (sem taxa até ACEITO; com 
 - `Chamado(prestador_id, criado_em, id)` → "meus chamados" já na ordem do cursor
 - FKs `cliente_id`, `prestador_id`, `atendente_id` **sem índice próprio** (`db_index=False`): os compostos acima já começam por elas, e cada índice a menos barateia INSERT/UPDATE.
 - `origem`/`destino` do chamado **sem GiST**: não há busca espacial em chamados.
-- `Chamado(cliente_id, encerrado_em)` e `Chamado(prestador_id, encerrado_em)` → fechamento. O período é filtrado pela data de encerramento (conclusão ou cancelamento com taxa), não pela de criação.
+- **Índice parcial** `Chamado(encerrado_em) WHERE encerrado_em IS NOT NULL` → fechamento. O período é filtrado pela data de encerramento (conclusão ou cancelamento com taxa), não pela de criação. Substituiu os compostos `(cliente_id, encerrado_em)` e `(prestador_id, encerrado_em)`: o fechamento varre o mês de **todos** os destinatários, e um índice que começa pelo destinatário não serve para esse filtro. Um índice no lugar de dois, e chamado em andamento nem entra nele.
 - `Chamado(rastreio_token)` único → consulta pública de rastreio em O(log n)
 - **GiST parcial** `Prestador(localizacao) WHERE disponivel = true` → proximidade só entre prestadores livres, num índice só. Dois índices separados (GiST + parcial em `disponivel`) não se combinam bem.
 - `EventoChamado(chamado_id, criado_em)` → histórico no detalhe do chamado
@@ -112,8 +112,9 @@ Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta
 4. O rastreio lê a posição do Redis. A busca por proximidade usa o PostGIS, com posição de no máximo ~60 s atrás, o que é irrelevante num raio de 30 km. Prestador sem posição nova há mais de **10 min** some da busca (app fechado ou sem sinal), mesmo marcado como disponível.
 
 ### Fluxo D — Concluir e fechar
-1. Ao concluir, o prestador lança os itens (pedágio, espera, adicionais). O `valor_final` é recalculado com `SUM` no banco, numa query só, e gravado no chamado (desnormalizado para leitura rápida).
-2. No fim do período, o **Celery Beat** gera os fechamentos por cliente (o que cobrar) e por prestador (o que repassar). A agregação é feita no SQL (`GROUP BY` + `SUM`), não em Python, e os itens entram com `bulk_create`. Uma restrição única em `(tipo, cliente_id/prestador_id, periodo_inicio)` impede fechamento duplicado se a tarefa rodar duas vezes.
+1. De `A_CAMINHO` a `EM_ATENDIMENTO`, o prestador (ou o despachante) lança os itens via `POST /chamados/{id}/itens`: pedágio e adicionais por valor, espera por minutos (calculada pela tabela do cliente, em frações de 15 min). Cada lançamento incrementa `version` e gera um `EventoChamado`. Ao concluir, o `valor_final` é recalculado com `SUM` no banco e gravado no chamado (desnormalizado para leitura rápida).
+2. No dia 1 às 03:00 (horário de Brasília), o **Celery Beat** gera os fechamentos do mês anterior por cliente (o que cobrar) e por prestador (o que repassar). Cada tipo é **um único comando SQL**: `INSERT ... SELECT ... GROUP BY ... ON CONFLICT DO NOTHING RETURNING` numa CTE que, na mesma instrução, insere os itens. Nada é carregado para o Python: **2 queries por período, seja qual for o volume** (verificado em teste). As restrições únicas tornam a geração idempotente, inclusive com execuções simultâneas (testado com threads). Os limites do mês são calculados no fuso de Brasília: um chamado encerrado às 23:59 do dia 30 (02:59 UTC do dia 1º) entra no mês certo. Mês ainda em andamento → 422.
+3. **Repasse ao prestador:** `REPASSE_PRESTADOR_PERCENTUAL` (padrão 100%) aplicado e arredondado por chamado; o total do fechamento é sempre a soma exata dos itens.
 
 ---
 

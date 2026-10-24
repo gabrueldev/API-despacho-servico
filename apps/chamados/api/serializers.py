@@ -1,8 +1,10 @@
 import re
+from decimal import Decimal
 from typing import Any
 
 from rest_framework import serializers
 
+from apps.precos.tipos import TipoItem
 from core.fields import PontoField
 
 from ..estados import AVANCOS_DO_PRESTADOR
@@ -164,3 +166,24 @@ class RastreioSerializer(serializers.Serializer[Any]):
     origem = serializers.DictField(child=serializers.FloatField())
     prestador = PrestadorRastreioSerializer(allow_null=True)
     expira_em = serializers.DateTimeField(allow_null=True)
+
+
+class LancarItemSerializer(serializers.Serializer[Any]):
+    tipo = serializers.ChoiceField(
+        choices=[
+            (t.value, t.label) for t in (TipoItem.PEDAGIO, TipoItem.ESPERA, TipoItem.ADICIONAL)
+        ]
+    )
+    descricao = serializers.CharField(max_length=120, required=False, default="")
+    valor = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=Decimal("0.01"), required=False
+    )
+    minutos = serializers.IntegerField(min_value=1, max_value=24 * 60, required=False)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if attrs["tipo"] == TipoItem.ESPERA:
+            if "minutos" not in attrs:
+                raise serializers.ValidationError({"minutos": "Obrigatório para espera."})
+        elif "valor" not in attrs:
+            raise serializers.ValidationError({"valor": "Obrigatório para pedágio e adicional."})
+        return attrs

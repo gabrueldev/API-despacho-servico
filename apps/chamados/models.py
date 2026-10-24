@@ -73,8 +73,13 @@ class Chamado(models.Model):
                 name="chamado_ativos",
             ),
             models.Index(fields=["prestador", "criado_em", "id"], name="chamado_prestador_criado"),
-            models.Index(fields=["cliente", "encerrado_em"], name="chamado_cliente_encerrado"),
-            models.Index(fields=["prestador", "encerrado_em"], name="chamado_prestador_encerrado"),
+            # Fechamento: varre o mês inteiro de todos os clientes/prestadores. Parcial: chamado
+            # em andamento (encerrado_em nulo) não entra no índice nem paga por ele na escrita.
+            models.Index(
+                fields=["encerrado_em"],
+                condition=Q(encerrado_em__isnull=False),
+                name="chamado_encerrado",
+            ),
         ]
         constraints = [
             models.CheckConstraint(

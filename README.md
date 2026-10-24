@@ -2,7 +2,7 @@
 
 API de despacho de serviços (guincho, entregas, manutenção) em **Python / Django**, feita para demonstrar na prática concorrência, filas, banco otimizado, segurança, testes e arquitetura em camadas.
 
-> **Status:** em construção — etapas 1 a 6 concluídas (base, domínio, ciclo de vida, concorrência/idempotência, processamento assíncrono, proximidade e rastreio). Plano completo em [`despacha-plano-arquitetura.md`](despacha-plano-arquitetura.md).
+> **Status:** em construção — etapas 1 a 7 concluídas (base, domínio, ciclo de vida, concorrência/idempotência, processamento assíncrono, proximidade/rastreio e financeiro). Plano completo em [`despacha-plano-arquitetura.md`](despacha-plano-arquitetura.md).
 
 **Stack:** Django 5.2 + DRF · PostgreSQL 16 + PostGIS · Redis 7 · Celery 5 + Beat · Nginx + Gunicorn · Docker Compose · GitHub Actions · pytest
 
@@ -25,6 +25,8 @@ docker compose exec api python manage.py createsuperuser
 | `POST /prestadores/me/localizacao` | Posição do prestador: zero queries no Postgres (JWT sem estado + Redis), gravada em lote pelo Beat |
 | `GET /prestadores/proximos?lat=&lng=&raio=` | Disponíveis no raio, do mais próximo ao mais distante (KNN no GiST parcial, 1 query) |
 | `GET /rastreio/{token}` | Link público do associado: status e posição do prestador, cache de 5 s, 410 quando expira |
+| `POST /chamados/{id}/itens` | Lança pedágio, espera (por minutos) ou adicional |
+| `GET /fechamentos?tipo=&periodo=AAAA-MM` · `GET /fechamentos/{id}` · `POST /fechamentos/gerar` | Fechamento mensal por cliente e por prestador (2 queries por período, idempotente) |
 | `POST /chamados/{id}/aceitar` · `recusar` · `status` · `concluir` · `cancelar` | Ciclo de vida (trava otimista por `version`, 409 em conflito) |
 
 ### Sem Docker (macOS)
@@ -63,7 +65,7 @@ apps/
   chamados/      criação, consulta, máquina de estados e despacho concorrente
   prestadores/   Prestador, localização (Redis + gravação em lote) e busca por proximidade
   precos/        tabela de preços (cache Redis) e cálculo em Decimal
-  financeiro/    itens e fechamentos               (etapa 7)
+  financeiro/    fechamentos mensais gerados em SQL (INSERT ... SELECT em CTE)
 core/            idempotência, paginação por cursor, erros padronizados, health, PontoField
 ```
 
