@@ -145,3 +145,22 @@ class AvancarSerializer(serializers.Serializer[Any]):
 
 class DespacharSerializer(serializers.Serializer[Any]):
     prestador_id = serializers.IntegerField(min_value=1)
+
+
+class PosicaoSerializer(serializers.Serializer[Any]):
+    lat = serializers.FloatField()
+    lng = serializers.FloatField()
+    registrado_em = serializers.CharField()
+
+
+class PrestadorRastreioSerializer(serializers.Serializer[Any]):
+    nome = serializers.CharField()
+    posicao = PosicaoSerializer(allow_null=True)
+
+
+class RastreioSerializer(serializers.Serializer[Any]):
+    status = serializers.ChoiceField(choices=Status.choices)
+    placa = serializers.CharField()
+    origem = serializers.DictField(child=serializers.FloatField())
+    prestador = PrestadorRastreioSerializer(allow_null=True)
+    expira_em = serializers.DateTimeField(allow_null=True)

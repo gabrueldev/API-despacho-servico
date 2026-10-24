@@ -117,6 +117,8 @@ REST_FRAMEWORK = {
         # App envia a cada 15 s (4/min); folga para reenvios.
         "localizacao": "6/min",
         "login": "10/min",
+        # Link público: por IP (anônimo); o cache de 5 s absorve o resto.
+        "rastreio": "60/min",
     },
 }
 
@@ -156,6 +158,11 @@ CELERY_TIMEZONE = TIME_ZONE
 # Domínio
 ACEITE_TIMEOUT_SEGUNDOS = env.int("ACEITE_TIMEOUT_SEGUNDOS", default=120)
 RAIO_BUSCA_KM = env.int("RAIO_BUSCA_KM", default=30)
+RAIO_BUSCA_MAX_KM = 100
+PROXIMOS_LIMITE = 20
+# Prestador sem posição nova há mais que isso some da busca (app fechado/sem sinal).
+POSICAO_VALIDADE_MINUTOS = env.int("POSICAO_VALIDADE_MINUTOS", default=10)
+RASTREIO_CACHE_SEGUNDOS = 5
 RASTREIO_VALIDADE_HORAS = env.int("RASTREIO_VALIDADE_HORAS", default=24)
 LOCALIZACAO_FLUSH_SEGUNDOS = env.int("LOCALIZACAO_FLUSH_SEGUNDOS", default=60)
 IDEMPOTENCY_TTL_HORAS = env.int("IDEMPOTENCY_TTL_HORAS", default=24)

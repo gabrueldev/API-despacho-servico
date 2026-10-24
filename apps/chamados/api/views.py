@@ -1,9 +1,11 @@
 from typing import Any
 
+from django.conf import settings
+from django.core.cache import cache
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import generics, status
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
@@ -24,6 +26,7 @@ from .serializers import (
     ChamadoEstadoSerializer,
     ChamadoListaSerializer,
     DespacharSerializer,
+    RastreioSerializer,
     RecusarSerializer,
 )
 
@@ -170,3 +173,24 @@ class CancelarView(APIView):
     def post(self, request: Request, pk: int) -> Response:
         dados = _validar(CancelarSerializer, request)
         return _estado(services.cancelar(usuario=request.user, chamado_id=pk, **dados))  # type: ignore[arg-type]
+
+
+class RastreioView(APIView):
+    """Link público para o associado (sem login).
+
+    Resposta inteira em cache por 5 s: vários aparelhos abrindo o mesmo link viram uma query
+    a cada 5 s. Só respostas 200 entram no cache; o rate limit é por IP.
+    """
+
+    authentication_classes: list[Any] = []
+    permission_classes = [AllowAny]
+    throttle_scope = "rastreio"
+
+    @extend_schema(responses={200: dict, 404: dict, 410: dict})
+    def get(self, request: Request, token: str) -> Response:
+        chave = f"rastreio:{token}"
+        corpo = cache.get(chave)
+        if corpo is None:
+            corpo = RastreioSerializer(selectors.rastreio(token)).data
+            cache.set(chave, corpo, timeout=settings.RASTREIO_CACHE_SEGUNDOS)
+        return Response(corpo)

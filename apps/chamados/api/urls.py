@@ -11,4 +11,5 @@ urlpatterns = [
     path("chamados/<int:pk>/status", views.AvancarView.as_view(), name="chamado-status"),
     path("chamados/<int:pk>/concluir", views.ConcluirView.as_view(), name="chamado-concluir"),
     path("chamados/<int:pk>/cancelar", views.CancelarView.as_view(), name="chamado-cancelar"),
+    path("rastreio/<str:token>", views.RastreioView.as_view(), name="rastreio"),
 ]

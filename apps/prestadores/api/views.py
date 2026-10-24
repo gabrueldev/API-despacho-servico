@@ -1,5 +1,7 @@
+from dataclasses import asdict
 from typing import Any
 
+from django.conf import settings
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.request import Request
@@ -11,7 +13,7 @@ from apps.contas.models import Papel
 from apps.contas.permissions import tem_papel
 from core.fields import PontoField
 
-from .. import localizacao
+from .. import localizacao, selectors
 
 
 class LocalizacaoSerializer(serializers.Serializer[Any]):
@@ -41,3 +43,42 @@ class MinhaLocalizacaoView(APIView):
         usuario_id: int = request.user.pk  # type: ignore[assignment]
         mudou = localizacao.registrar(usuario_id, lat=ponto.y, lng=ponto.x)
         return Response({"mudou": mudou})
+
+
+class ProximosQuerySerializer(serializers.Serializer[Any]):
+    lat = serializers.FloatField(min_value=-90, max_value=90)
+    lng = serializers.FloatField(min_value=-180, max_value=180)
+    raio = serializers.FloatField(
+        min_value=0.1,
+        max_value=settings.RAIO_BUSCA_MAX_KM,
+        default=settings.RAIO_BUSCA_KM,
+        help_text="Raio em km.",
+    )
+
+
+class PrestadorProximoSerializer(serializers.Serializer[Any]):
+    id = serializers.IntegerField()
+    nome = serializers.CharField()
+    telefone = serializers.CharField()
+    lat = serializers.FloatField()
+    lng = serializers.FloatField()
+    distancia_km = serializers.DecimalField(max_digits=8, decimal_places=2)
+
+
+class ProximosView(APIView):
+    """Disponíveis no raio, do mais próximo ao mais distante (o 1º é a sugestão automática)."""
+
+    permission_classes = [tem_papel(Papel.DESPACHANTE, Papel.ATENDENTE)]
+
+    @extend_schema(
+        parameters=[ProximosQuerySerializer],
+        responses=PrestadorProximoSerializer(many=True),
+    )
+    def get(self, request: Request) -> Response:
+        filtro = ProximosQuerySerializer(data=request.query_params)
+        filtro.is_valid(raise_exception=True)
+        dados = filtro.validated_data
+        encontrados = selectors.proximos(lat=dados["lat"], lng=dados["lng"], raio_km=dados["raio"])
+        return Response(
+            PrestadorProximoSerializer([asdict(p) for p in encontrados], many=True).data
+        )

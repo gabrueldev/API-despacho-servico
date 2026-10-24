@@ -109,7 +109,7 @@ Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta
 1. O app envia `POST /prestadores/me/localizacao` a cada ~15 s (rota com **rate limit**).
 2. **Zero queries no Postgres** (garantido por teste): a autenticação é sem estado (`JWTStatelessUserAuthentication`; o `papel` vai como claim no JWT) e a posição vai **só para o Redis** (hash `loc:usuario:{id}` com lat, lng e timestamp). Um **script Lua** grava e, só se a posição mudou mais de ~1 m (5 casas decimais), marca o prestador como pendente — tudo numa ida ao Redis. Trade-off: um usuário desativado segue enviando até o access token expirar (15 min).
 3. A cada **60 s**, uma tarefa do Beat (fila `pesada`) esvazia os pendentes com `SPOP` em lotes de 1000 e grava cada lote no Postgres num único `UPDATE ... FROM (VALUES ...)`. Prestador parado não gera escrita. Se o lote falhar, os ids voltam para a fila.
-4. O rastreio lê a posição do Redis. A busca por proximidade usa o PostGIS, com posição de no máximo ~60 s atrás, o que é irrelevante num raio de 30 km.
+4. O rastreio lê a posição do Redis. A busca por proximidade usa o PostGIS, com posição de no máximo ~60 s atrás, o que é irrelevante num raio de 30 km. Prestador sem posição nova há mais de **10 min** some da busca (app fechado ou sem sinal), mesmo marcado como disponível.
 
 ### Fluxo D — Concluir e fechar
 1. Ao concluir, o prestador lança os itens (pedágio, espera, adicionais). O `valor_final` é recalculado com `SUM` no banco, numa query só, e gravado no chamado (desnormalizado para leitura rápida).
@@ -125,8 +125,8 @@ Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta
 4. **Sem N+1:** listagens usam `select_related("cliente", "prestador")` e `prefetch_related("itens")`; testes com `assertNumQueries` garantem o número de queries.
 5. **Dinheiro em `Decimal`:** nunca `float`; cálculo feito no back-end e testado.
 6. **Paginação por cursor:** estável e rápida em tabelas grandes, sem `COUNT(*)` nem `OFFSET`. A ordenação `(criado_em, id)` bate com os índices.
-7. **Cache com invalidação:** tabela de preços em cache, invalidada quando alguém a edita. A resposta pública de `/rastreio/{token}` fica em cache por 5 s, o que absorve vários associados abrindo o mesmo link.
-8. **Proximidade com índice:** `ST_DWithin` (usa o GiST) para filtrar o raio e o operador KNN `<->` para ordenar por distância. Nunca `ST_Distance(...) < raio` no `WHERE`, que não usa índice.
+7. **Cache com invalidação:** tabela de preços em cache, invalidada quando alguém a edita. A resposta pública de `/rastreio/{token}` fica em cache por 5 s (só respostas 200), o que absorve vários associados abrindo o mesmo link: acesso repetido = 0 queries. Rate limit de 60/min por IP. Expirado → **410**; inexistente → 404. Placa mascarada (`ABC-**23`), sem telefone do prestador; posição só de `ACEITO` a `EM_ATENDIMENTO`.
+8. **Proximidade com índice:** `ST_DWithin` (usa o GiST) para filtrar o raio e o operador KNN `<->` para ordenar por distância, em SQL explícito — o `Distance()` do ORM ordena por `ST_Distance`, que calcula para todo candidato e ordena em memória. O `EXPLAIN` (verificado em teste) mostra um único `Index Scan using prestador_livre_loc_gist` com `Order By: <->` e **nenhum Sort**: o índice devolve os 20 mais próximos já em ordem e para. Nunca `ST_Distance(...) < raio` no `WHERE`, que não usa índice.
 9. **Serializers enxutos:** um serializer de listagem (poucos campos, `only()`) e outro de detalhe (itens + histórico).
 10. **Auditoria:** `EventoChamado` registra toda mudança de status e de valor.
 11. **Permissões por papel:** prestador só vê os próprios chamados; financeiro só vê fechamentos.
@@ -152,7 +152,7 @@ POST   /chamados/{id}/itens        lança pedágio, espera, adicionais
 POST   /chamados/{id}/concluir
 POST   /chamados/{id}/cancelar
 
-GET    /prestadores/proximos?lat=&lng=&raio=
+GET    /prestadores/proximos?lat=&lng=&raio=   (despachante, atendente) 1 query, KNN no GiST
 POST   /prestadores/me/localizacao (rate limit)
 GET    /rastreio/{token}           público, sem login (link para o associado)
 
