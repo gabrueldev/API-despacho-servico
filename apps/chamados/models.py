@@ -24,6 +24,13 @@ class Status(models.TextChoices):
 ENCERRADOS = (Status.CONCLUIDO, Status.CANCELADO)
 
 
+class FonteDistancia(models.TextChoices):
+    LINHA_RETA = "LINHA_RETA", "Linha reta"
+    ROTA = "ROTA", "Rota por estrada"
+    # Serviço de rota fora do ar ou sem rota: linha reta × fator de correção.
+    ESTIMADA = "ESTIMADA", "Estimada"
+
+
 def gerar_token_rastreio() -> str:
     return secrets.token_urlsafe(16)
 
@@ -51,6 +58,9 @@ class Chamado(models.Model):
     origem = models.PointField(geography=True, srid=4326, spatial_index=False)
     destino = models.PointField(geography=True, srid=4326, spatial_index=False)
     distancia_km = models.DecimalField(max_digits=8, decimal_places=2)
+    distancia_fonte = models.CharField(
+        max_length=12, choices=FonteDistancia.choices, default=FonteDistancia.LINHA_RETA
+    )
     valor_previsto = models.DecimalField(max_digits=12, decimal_places=2)
     valor_final = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     criado_em = models.DateTimeField(auto_now_add=True)

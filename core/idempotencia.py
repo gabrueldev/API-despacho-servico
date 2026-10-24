@@ -6,6 +6,9 @@
 - Duas requisições simultâneas com a mesma chave: a segunda esbarra na constraint única,
   a operação dela é desfeita inteira e ela devolve a resposta da primeira.
 - Só sucesso é gravado: um erro (ex.: 422 de regra) pode ser corrigido e reenviado.
+- `preparar` (opcional) roda só para chave nova e **fora** da transação: o lugar de leituras
+  lentas, como uma chamada HTTP, que não devem segurar transação aberta nem ser pagas por
+  um reenvio.
 """
 
 import hashlib
@@ -65,6 +68,7 @@ def executar(
     chave: str,
     dados: Any,
     operacao: Callable[[], Resultado],
+    preparar: Callable[[], None] | None = None,
 ) -> Resultado:
     if not chave or len(chave) > TAMANHO_MAXIMO_CHAVE:
         raise ErroDominio(
@@ -76,6 +80,8 @@ def executar(
     if registro := _buscar_valida(usuario, chave):
         return _repetir(registro, hash_atual)
 
+    if preparar:
+        preparar()
     try:
         with transaction.atomic():
             resultado = operacao()

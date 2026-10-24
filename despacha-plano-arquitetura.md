@@ -63,7 +63,7 @@ Qualquer status não encerrado ──► CANCELADO   (sem taxa até ACEITO; com 
 | **Cliente** (contratante, ex.: proteção veicular) | id, nome, cnpj, tabela_precos_id |
 | **TabelaPrecos** | id, nome, valor_saida, valor_km_excedente, km_franquia, valor_hora_espera |
 | **Prestador** | id, usuario_id (1:1), nome, telefone, disponivel, localizacao (Point/PostGIS), atualizado_em |
-| **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), **distancia_km**, valor_previsto, valor_final, criado_em, atualizado_em, **encerrado_em** (conclusão ou cancelamento), **rastreio_token** (único), **rastreio_expira_em**, **version** |
+| **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), **distancia_km**, **distancia_fonte** (`LINHA_RETA` / `ROTA` / `ESTIMADA`), valor_previsto, valor_final, criado_em, atualizado_em, **encerrado_em** (conclusão ou cancelamento), **rastreio_token** (único), **rastreio_expira_em**, **version** |
 | **ItemValor** | id, chamado_id, tipo (SAIDA, KM_EXCEDENTE, PEDAGIO, ESPERA, ADICIONAL, TAXA_CANCELAMENTO), descricao, quantidade, valor_unitario, total |
 | **EventoChamado** | id, chamado_id, usuario_id, de_status, para_status, dados (JSON), criado_em |
 | **Fechamento** | id, tipo (CLIENTE / PRESTADOR), cliente_id (opcional), prestador_id (opcional), periodo_inicio, periodo_fim, total, quantidade_chamados, status (GERADO / PAGO). `CHECK`: exatamente um dos dois preenchido, coerente com o tipo. Os dois são FKs reais, então permitem índice e JOIN. Únicos parciais `(cliente_id, periodo_inicio) WHERE tipo='CLIENTE'` e `(prestador_id, periodo_inicio) WHERE tipo='PRESTADOR'`. |
@@ -133,6 +133,7 @@ Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta
 11. **Permissões por papel:** prestador só vê os próprios chamados; financeiro só vê fechamentos.
 12. **Celery bem configurado:** filas separadas por prioridade, `acks_late=True` e `worker_prefetch_multiplier=1` na fila `pesada` (uma tarefa longa não segura as outras), tarefas enfileiradas só após o commit (`transaction.on_commit`).
 13. **Segurança:** JWT com access curto + refresh, senhas com hash, segredos em variáveis de ambiente, validação de toda entrada.
+14. **Rota por estrada sem acoplar o chamado ao mapa:** OSRM próprio (Docker, OpenStreetMap, sem chave nem cobrança por chamada) atrás da interface `CalculadoraDistancia`. Timeout de 2 s, plano B em linha reta × 1,3 (`ESTIMADA`) e circuit breaker: uma falha de rede pausa as consultas por 30 s, para um OSRM fora do ar não custar 2 s em cada chamado. "Sem rota" (ponto fora do mapa) estima sem pausar, porque o serviço está bem. Rotas em cache no Redis por 30 dias, com as coordenadas arredondadas a ~110 m. A medição roda **fora da transação**: com `Idempotency-Key`, o `executar` chama `preparar()` depois de checar o reenvio e antes do `atomic()`, então um HTTP lento não segura transação aberta e um reenvio não paga a medição.
 
 ---
 
@@ -204,6 +205,7 @@ despacha/
    - `manage.py seed`: dados de demonstração determinísticos (semente fixa), em `bulk_create`, com um único hash de senha e as datas espalhadas por UPDATE no banco. 50 mil chamados levam cerca de 16 s.
    - `manage.py explicar`: `EXPLAIN (ANALYZE, BUFFERS)` dos mesmos selectors/SQL da API, para qualquer pessoa reproduzir os números do README. Ele mostra a 2ª execução, porque a 1ª de cada conexão paga a carga do PostGIS, e com o pool isso não se repete.
    - CI com runner fixo (`ubuntu-24.04`), actions atualizadas, piso de cobertura de 95% e cancelamento de execuções superadas.
+9. **Rota por estrada:** `RotaOSRM` (httpx com keep-alive, cache, plano B e circuit breaker), campo `distancia_fonte` e OSRM no Docker Compose (`--profile rota`: baixa o mapa do Geofabrik, pré-processa com MLD e serve). Testado contra um servidor HTTP falso real (sucesso, cache, timeout, conexão recusada, 5xx, sem rota) e de ponta a ponta com o OSRM real sobre o mapa do Sudeste.
 
 ---
 
@@ -226,7 +228,7 @@ Padrões adotados para o MVP. Qualquer item pode ser trocado depois sem mudar a 
 | # | Tema | Decisão |
 |---|---|---|
 | 1 | **Cálculo do valor** | `valor_saida` inclui **franquia de 40 km**. Acima disso, cobra `valor_km_excedente` por **km inteiro iniciado** (arredonda para cima: 40,01 km → 1 km). Espera cobrada por hora, **fracionada a cada 15 min, arredondando para cima** (16 min → 0,5 h). Pedágio e adicionais lançados manualmente. Tudo em `Decimal`, arredondado para **2 casas** (`ROUND_HALF_UP`). |
-| 2 | **Distância** | **Linha reta da origem ao destino** (PostGIS `ST_Distance` em geography); o deslocamento do prestador até a origem está coberto pela saída. Calculada uma vez na criação e gravada em `distancia_km`. Interface `CalculadoraDistancia` permite plugar rota real (API de mapas) depois. |
+| 2 | **Distância** | **Da origem ao destino**; o deslocamento do prestador até a origem está coberto pela saída. Calculada uma vez na criação e gravada em `distancia_km`, com a fonte em `distancia_fonte`. `DISTANCIA_PROVEDOR=linha_reta` (padrão, PostGIS `ST_Distance` em geography) ou `osrm` (km por estrada). Com o OSRM fora do ar ou sem rota: linha reta × 1,3, marcada `ESTIMADA`. |
 | 3 | **Escolha do prestador** | Prestadores **disponíveis** num **raio de 30 km**, ordenados por distância. O despachante escolhe na lista (sugestão automática = o mais próximo). |
 | 4 | **Cancelamento** | Sem taxa até `DESPACHADO`/`ACEITO`. A partir de `A_CAMINHO`, cobra **taxa de saída** (= `valor_saida` da tabela), lançada como `ItemValor` do tipo `TAXA_CANCELAMENTO`. `CONCLUIDO` não pode ser cancelado. |
 | 5 | **Fechamento** | **Mensal**, gerado automaticamente pelo Celery Beat no dia 1 às 03:00 (referente ao mês anterior). Também pode ser gerado manualmente via `POST /fechamentos/gerar`. Só entram chamados `CONCLUIDO` ou cancelados com taxa. |
@@ -300,7 +302,6 @@ DB_POOL_MAX=10
 ### Fora do MVP (próximas versões)
 
 - WhatsApp Business API real e geocoding de endereços
-- Rota real (km por estrada) via API de mapas
 - Painel web / app do prestador
 - Avaliação de prestadores, antifraude e indicadores
 - Multiempresa (várias assistências)

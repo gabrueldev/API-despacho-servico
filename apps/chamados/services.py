@@ -19,8 +19,9 @@ from apps.precos.tipos import TipoItem
 from apps.prestadores.models import Prestador
 from core.exceptions import Conflito, ErroDominio, NaoEncontrado
 
+from . import distancia as distancias
 from . import estados, selectors
-from .distancia import CalculadoraDistancia, calculadora_padrao
+from .distancia import Distancia
 from .models import Chamado, EventoChamado, ItemValor, Status
 
 
@@ -43,8 +44,11 @@ def criar_chamado(
     *,
     atendente: Usuario,
     dados: NovoChamado,
-    calculadora: CalculadoraDistancia = calculadora_padrao,
+    distancia: Distancia | None = None,
 ) -> ChamadoCriado:
+    """`distancia` vem pronta quando quem chama está dentro de uma transação (idempotência):
+    medir pode ser uma chamada HTTP ao OSRM, que não deve segurar transação aberta.
+    """
     cliente = (
         Cliente.objects.filter(pk=dados.cliente_id, ativo=True)
         .only("id", "tabela_precos_id")
@@ -55,8 +59,9 @@ def criar_chamado(
 
     # Leituras fora da transação: ela fica curta e só com escritas.
     tabela = obter_tabela(cliente.tabela_precos_id)
-    distancia_km = calculadora.distancia_km(dados.origem, dados.destino)
-    previstos = calculo.itens_deslocamento(tabela, distancia_km)
+    if distancia is None:
+        distancia = distancias.medir(dados.origem, dados.destino)
+    previstos = calculo.itens_deslocamento(tabela, distancia.km)
     valor_previsto = calculo.total(previstos)
 
     with transaction.atomic():
@@ -68,7 +73,8 @@ def criar_chamado(
             endereco_origem=dados.endereco_origem,
             origem=dados.origem,
             destino=dados.destino,
-            distancia_km=distancia_km,
+            distancia_km=distancia.km,
+            distancia_fonte=distancia.fonte,
             valor_previsto=valor_previsto,
         )
         itens = ItemValor.objects.bulk_create(
@@ -87,7 +93,11 @@ def criar_chamado(
             usuario=atendente,
             de_status=None,
             para_status=Status.ABERTO,
-            dados={"valor_previsto": str(valor_previsto), "distancia_km": str(distancia_km)},
+            dados={
+                "valor_previsto": str(valor_previsto),
+                "distancia_km": str(distancia.km),
+                "distancia_fonte": distancia.fonte,
+            },
         )
 
     return ChamadoCriado(chamado=chamado, itens=itens)

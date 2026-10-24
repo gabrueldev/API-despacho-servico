@@ -6,18 +6,14 @@ from django.db import connection
 from django.urls import reverse
 
 from apps.chamados import selectors, services
-from apps.chamados.models import Chamado
+from apps.chamados.distancia import Distancia
+from apps.chamados.models import Chamado, FonteDistancia
 from apps.contas.models import Papel
 from tests.factories import ClienteFactory, PrestadorFactory, UsuarioFactory
 
 pytestmark = pytest.mark.django_db
 
 URL = reverse("chamados")
-
-
-class DistanciaFixa:
-    def distancia_km(self, origem: Point, destino: Point) -> Decimal:
-        return Decimal("58")
 
 
 def _criar(n: int = 1, prestador=None) -> list[Chamado]:
@@ -34,7 +30,7 @@ def _criar(n: int = 1, prestador=None) -> list[Chamado]:
                 origem=Point(-46.63, -23.55, srid=4326),
                 destino=Point(-46.47, -23.43, srid=4326),
             ),
-            calculadora=DistanciaFixa(),
+            distancia=Distancia(Decimal("58"), FonteDistancia.LINHA_RETA),
         ).chamado
         if prestador:
             Chamado.objects.filter(pk=chamado.pk).update(prestador=prestador)

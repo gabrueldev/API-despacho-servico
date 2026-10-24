@@ -67,5 +67,9 @@ jobs:
       - name: Schema OpenAPI válido
         run: python manage.py spectacular --validate --fail-on-warn --file /tmp/schema.yml
 
+      - name: Docker Compose válido (com o profile da rota)
+        # O .env sai logo depois: o Django leria esses valores no passo dos testes.
+        run: cp .env.example .env && docker compose --profile rota config --quiet && rm .env
+
       - name: Testes
         run: pytest --cov=apps --cov=core --cov-report=term-missing --cov-fail-under=95

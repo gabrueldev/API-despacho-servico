@@ -5,8 +5,8 @@ from django.contrib.gis.geos import Point
 from django.urls import reverse
 
 from apps.chamados import services
-from apps.chamados.distancia import LinhaRetaPostGIS
-from apps.chamados.models import Chamado, EventoChamado, Status
+from apps.chamados.distancia import Distancia, LinhaRetaPostGIS
+from apps.chamados.models import Chamado, EventoChamado, FonteDistancia, Status
 from apps.contas.models import Papel
 from apps.precos.tipos import TipoItem
 from tests.factories import ClienteFactory, UsuarioFactory
@@ -19,14 +19,6 @@ SE = {"lat": -23.5503, "lng": -46.6339}
 GRU = {"lat": -23.4356, "lng": -46.4731}
 # ~1 grau de latitude (~110,6 km): força km excedente
 LONGE = {"lat": -22.5503, "lng": -46.6339}
-
-
-class DistanciaFixa:
-    def __init__(self, km: str) -> None:
-        self.km = Decimal(km)
-
-    def distancia_km(self, origem: Point, destino: Point) -> Decimal:
-        return self.km
 
 
 def _payload(cliente_id: int, destino: dict[str, float] = GRU) -> dict[str, object]:
@@ -52,7 +44,7 @@ def test_service_calcula_valor_previsto_e_registra_evento() -> None:
             origem=Point(-46.63, -23.55, srid=4326),
             destino=Point(-46.47, -23.43, srid=4326),
         ),
-        calculadora=DistanciaFixa("58"),
+        distancia=Distancia(Decimal("58"), FonteDistancia.ROTA),
     )
 
     chamado = criado.chamado
@@ -65,14 +57,17 @@ def test_service_calcula_valor_previsto_e_registra_evento() -> None:
     evento = EventoChamado.objects.get(chamado=chamado)
     assert (evento.de_status, evento.para_status) == (None, Status.ABERTO)
     assert evento.usuario_id == atendente.pk
+    assert chamado.distancia_fonte == FonteDistancia.ROTA
+    assert evento.dados["distancia_fonte"] == "ROTA"
 
 
 def test_distancia_linha_reta_postgis() -> None:
-    km = LinhaRetaPostGIS().distancia_km(
+    medida = LinhaRetaPostGIS().medir(
         Point(SE["lng"], SE["lat"], srid=4326), Point(GRU["lng"], GRU["lat"], srid=4326)
     )
 
-    assert Decimal("20") < km < Decimal("22")
+    assert Decimal("20") < medida.km < Decimal("22")
+    assert medida.fonte == FonteDistancia.LINHA_RETA
 
 
 def test_post_cria_chamado_201(cliente_api) -> None:
@@ -88,6 +83,7 @@ def test_post_cria_chamado_201(cliente_api) -> None:
     km_excedente = (distancia - 40).to_integral_value(rounding="ROUND_CEILING")
     assert Decimal(body["valor_previsto"]) == Decimal("250.00") + km_excedente * Decimal("4.50")
     assert [i["tipo"] for i in body["itens"]] == ["SAIDA", "KM_EXCEDENTE"]
+    assert body["distancia_fonte"] == "LINHA_RETA"  # provedor padrão
     assert len(body["rastreio_token"]) >= 20
 
 

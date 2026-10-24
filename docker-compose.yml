@@ -72,6 +72,62 @@ services:
     depends_on:
       - api
 
+  # --- Rota por estrada (opcional) ------------------------------------------------------------
+  # docker compose --profile rota up   +   DISTANCIA_PROVEDOR=osrm no .env
+  # Na primeira vez baixa o mapa (OSRM_PBF_URL, padrão: Sudeste, ~860 MB) e pré-processa
+  # (minutos). Depois fica tudo no volume `osrm` e sobe em segundos. Sem esse profile, a API
+  # segue com a distância em linha reta (ou estimada, se DISTANCIA_PROVEDOR=osrm).
+  osrm-mapa:
+    image: curlimages/curl:8.10.1
+    profiles: [rota]
+    user: root
+    environment:
+      OSRM_PBF_URL: ${OSRM_PBF_URL:-https://download.geofabrik.de/south-america/brazil/sudeste-latest.osm.pbf}
+    volumes:
+      - osrm:/data
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ ! -s /data/regiao.osm.pbf ]; then
+          curl -fL --retry 3 -o /data/regiao.osm.pbf.part "$$OSRM_PBF_URL"
+          mv /data/regiao.osm.pbf.part /data/regiao.osm.pbf
+        fi
+
+  osrm-preparo:
+    image: ghcr.io/project-osrm/osrm-backend:v26.9.0-debian
+    profiles: [rota]
+    volumes:
+      - osrm:/data
+    depends_on:
+      osrm-mapa:
+        condition: service_completed_successfully
+    # MLD: pré-processamento mais rápido que CH e permite trocar pesos sem refazer tudo.
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ ! -s /data/regiao.osrm.mldgr ]; then
+          osrm-extract -p /opt/car.lua /data/regiao.osm.pbf
+          osrm-partition /data/regiao.osrm
+          osrm-customize /data/regiao.osrm
+        fi
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v26.9.0-debian
+    profiles: [rota]
+    command: osrm-routed --algorithm mld /data/regiao.osrm
+    volumes:
+      - osrm:/data:ro
+    depends_on:
+      osrm-preparo:
+        condition: service_completed_successfully
+    expose:
+      - "5000"
+    restart: unless-stopped
+
 volumes:
   pgdata:
   static:
+  osrm:

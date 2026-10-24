@@ -177,6 +177,15 @@ NOTIFICADOR = env("NOTIFICADOR", default="core.notificacoes.LogNotificador")
 # Quanto do valor_final de cada chamado vai para o prestador.
 REPASSE_PRESTADOR_PERCENTUAL = env.int("REPASSE_PRESTADOR_PERCENTUAL", default=100)
 
+# Distância do chamado: "linha_reta" (PostGIS) ou "osrm" (km por estrada).
+DISTANCIA_PROVEDOR = env.str("DISTANCIA_PROVEDOR", default="linha_reta")
+OSRM_URL = env.str("OSRM_URL", default="http://osrm:5000")
+OSRM_TIMEOUT_SEGUNDOS = env.float("OSRM_TIMEOUT_SEGUNDOS", default=2.0)
+# Sem rota (OSRM fora do ar): linha reta × fator. ~1,3 é o típico de estrada urbana no Brasil.
+DISTANCIA_FATOR_ESTIMATIVA = env.float("DISTANCIA_FATOR_ESTIMATIVA", default=1.3)
+ROTA_CACHE_DIAS = 30
+ROTA_PAUSA_SEGUNDOS = 30
+
 CELERY_BEAT_SCHEDULE = {
     "gravar-localizacoes": {
         "task": "apps.prestadores.tasks.gravar_localizacoes",

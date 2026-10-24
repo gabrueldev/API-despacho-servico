@@ -4,9 +4,9 @@ API de despacho de serviços (guincho, entregas, manutenção) em **Python / Dja
 
 [![CI](https://github.com/gabrueldev/API-despacho-servico/actions/workflows/ci.yml/badge.svg)](https://github.com/gabrueldev/API-despacho-servico/actions/workflows/ci.yml)
 
-**Stack:** Django 5.2 + DRF · PostgreSQL 16 + PostGIS · Redis 7 · Celery 5 + Beat · Nginx + Gunicorn · Docker Compose · GitHub Actions · pytest
+**Stack:** Django 5.2 + DRF · PostgreSQL 16 + PostGIS · Redis 7 · Celery 5 + Beat · OSRM (rota por estrada) · Nginx + Gunicorn · Docker Compose · GitHub Actions · pytest
 
-**Números:** 236 testes, cobertura de 98,6% (o CI exige ≥ 95%), mypy `strict`. Todas as queries de leitura quente rodam abaixo de **0,25 ms** sobre 50 mil chamados (veja [Desempenho](#desempenho)).
+**Números:** 250 testes, cobertura de 98,7% (o CI exige ≥ 95%), mypy `strict`. Todas as queries de leitura quente rodam abaixo de **0,25 ms** sobre 50 mil chamados (veja [Desempenho](#desempenho)).
 
 Plano e decisões completas em [`despacha-plano-arquitetura.md`](despacha-plano-arquitetura.md).
 
@@ -28,6 +28,35 @@ O `seed` é determinístico (semente fixa) e cria:
 Para medir desempenho, aumente o volume: `seed --limpar --chamados 50000 --prestadores 500` termina em cerca de 16 s, porque usa `bulk_create`, calcula o hash de senha uma vez só e espalha as datas com um UPDATE no banco. O comando só roda com `DJANGO_DEBUG=true`, a menos que receba `--forcar`.
 
 **Logins de demonstração** (senha `despacha123`): `admin@despacha.dev`, `atendente@despacha.dev`, `despachante@despacha.dev`, `financeiro@despacha.dev` e `prestador1@despacha.dev` … `prestadorN@despacha.dev`. Ao final, o `seed` imprime um link de rastreio de exemplo.
+
+### Rota por estrada (OSRM)
+
+Por padrão, a distância do chamado é a linha reta (PostGIS). Para usar o km por estrada:
+
+```bash
+# no .env: DISTANCIA_PROVEDOR=osrm
+docker compose --profile rota up --build
+```
+
+Na primeira vez, o compose baixa o mapa do Sudeste do Geofabrik (~860 MB) e o pré-processa uma única vez. Medido aqui (Apple M-series, 16 GB): cerca de **8 min** e pico de **6,3 GB de RAM** (reserve ~8 GB para o Docker), ocupando 5,6 GB em disco. Depois disso tudo fica no volume `osrm`, e o OSRM sobe em segundos e responde uma rota em **1–2 ms** (mediana de 50 rotas aleatórias na Grande SP). Para outra região, troque `OSRM_PBF_URL` e apague o volume.
+
+| Situação | O que acontece | `distancia_fonte` |
+|---|---|---|
+| OSRM respondeu | km por estrada, guardado em cache por 30 dias (coordenadas arredondadas a ~110 m) | `ROTA` |
+| Timeout (> 2 s), conexão recusada ou 5xx | linha reta × 1,3; **pausa** as consultas por 30 s (circuit breaker), para não pagar o timeout em todo chamado | `ESTIMADA` |
+| Sem rota (ponto fora do mapa, no mar) | linha reta × 1,3, sem pausar: o serviço está bem | `ESTIMADA` |
+| `DISTANCIA_PROVEDOR=linha_reta` | geodésica no PostGIS | `LINHA_RETA` |
+
+Como a fonte fica gravada, o financeiro sabe quais valores previstos foram estimados.
+
+Teste de ponta a ponta com o OSRM real (mapa do Sudeste), pela API:
+
+| Chamado | Distância | Fonte | Valor previsto | Tempo do POST |
+|---|---|---|---|---|
+| Sé → Guarulhos (linha reta seria ~21 km) | 25,30 km | `ROTA` | R$ 250,00 | 52 ms (21 ms com cache) |
+| Sé → Campinas | 92,91 km | `ROTA` | R$ 488,50 | 14 ms |
+| Sé → Santos, com o OSRM derrubado | 71,25 km | `ESTIMADA` | R$ 394,00 | 62 ms |
+| Sé → Jundiaí, durante a pausa | 63,13 km | `ESTIMADA` | R$ 358,00 | 17 ms (nem tenta o OSRM) |
 
 ### Sem Docker (macOS)
 
@@ -54,7 +83,7 @@ Documentação interativa em **`/docs/`** (Swagger) e schema OpenAPI em `/schema
 |---|---|---|
 | `GET /health` | público | Saúde da API (banco + Redis) |
 | `POST /auth/login` · `POST /auth/refresh` | público | Tokens JWT (login limitado a 10/min) |
-| `POST /chamados` | atendente | Abre o chamado e calcula o valor previsto. Aceita `Idempotency-Key` |
+| `POST /chamados` | atendente | Abre o chamado e calcula o valor previsto pela distância (linha reta ou km por estrada, com a fonte em `distancia_fonte`). Aceita `Idempotency-Key` |
 | `GET /chamados?status=&cursor=` | equipe, prestador (só os seus) | Listagem paginada por cursor, 1 query |
 | `GET /chamados/{id}` | idem | Detalhe com itens e histórico, 3 queries fixas |
 | `POST /chamados/{id}/despachar` | despachante | `SELECT … FOR UPDATE NOWAIT`: quem perde a corrida recebe 409 na hora. Agenda o timeout de aceite (2 min) |
@@ -83,6 +112,7 @@ As transições de estado usam trava otimista por `version`: uma escrita concorr
 | Virada de mês | Limites calculados em `America/Sao_Paulo` | Um chamado encerrado às 23h59 de 30/09 em Brasília já é 01/10 em UTC |
 | Listagens grandes | Cursor por `(criado_em, id)` + índices compostos na mesma ordem | O custo da página 1.000 é igual ao da página 1. `OFFSET` leria e descartaria todas as anteriores |
 | Prestador listando o próprio histórico | Subquery escalar em vez de JOIN | O Postgres resolve a subquery antes (InitPlan) e varre o índice já em ordem; com o JOIN, lia o histórico inteiro e ordenava |
+| Distância por estrada | OSRM próprio atrás de uma interface, com timeout de 2 s, plano B (linha reta × 1,3, marcada `ESTIMADA`), circuit breaker de 30 s e cache de 30 dias no Redis | Abrir chamado nunca falha nem trava por causa do mapa. Sem chave de API nem custo por consulta. A chamada HTTP acontece fora da transação, e um reenvio idempotente nem chega a medir |
 | Timeout de aceite | Agendado via `on_commit`; quando dispara, faz um UPDATE condicional sem ler nada antes | Se o prestador já aceitou, o UPDATE não casa linha nenhuma e nada acontece |
 | Notificações | Fila própria, backoff exponencial com jitter, deduplicadas por chave no Redis | Um provedor instável não atrasa o despacho, e um retry não notifica duas vezes |
 | Filas Celery | `critica` (timeouts), `notificacoes` e `pesada` (fechamento, flush de posições) com `prefetch=1` | Um fechamento pesado nunca atrasa um timeout de aceite |
@@ -139,7 +169,7 @@ docker compose exec api pytest --cov=apps --cov=core
 docker compose exec api ruff check . && docker compose exec api mypy .
 ```
 
-- **236 testes** contra PostgreSQL/PostGIS e Redis reais (sem SQLite nem mocks de banco), com cobertura de 98,6%.
+- **250 testes** contra PostgreSQL/PostGIS e Redis reais (sem SQLite nem mocks de banco), com cobertura de 98,7%.
 - **Concorrência de verdade:** os testes de corrida usam threads e conexões separadas, com uma `Barrier` para disparar todas juntas. Foram executados 25 vezes seguidas sem nenhuma falha intermitente.
 - **CI** (`.github/workflows/ci.yml`, runner fixo `ubuntu-24.04`): lint, formatação, mypy strict, migrations em dia, schema OpenAPI sem avisos e testes com piso de 95% de cobertura.
 
@@ -171,6 +201,7 @@ core/            idempotência, paginação por cursor, erros padronizados, noti
 | `db` | PostgreSQL 16 + PostGIS |
 | `redis` | Broker, cache, rate limit e última posição dos prestadores |
 | `nginx` | Proxy reverso, gzip e arquivos estáticos |
+| `osrm-mapa` → `osrm-preparo` → `osrm` | Profile `rota`: baixa o mapa, pré-processa uma vez e serve as rotas |
 
 ---
 
@@ -185,7 +216,8 @@ core/            idempotência, paginação por cursor, erros padronizados, noti
 - **Location updates:** zero-Postgres-query ingestion through Redis, written to the database in batches.
 - **Billing:** monthly billing generated by a single `INSERT … SELECT` CTE per type.
 - **Pagination:** cursor pagination backed by composite indexes.
+- **Road distance:** a self-hosted OSRM behind an interface, with a 2 s timeout, a straight-line × 1.3 fallback (recorded as `ESTIMADA`), a circuit breaker and a Redis cache. Opening a request never fails because of the map service.
 
-All hot read paths run under 0.25 ms on 50k records. You can reproduce this with `python manage.py seed --chamados 50000` followed by `python manage.py explicar`, which prints real `EXPLAIN ANALYZE` plans. There are 236 tests against real Postgres and Redis, with 98.6% coverage, and mypy runs in strict mode.
+All hot read paths run under 0.25 ms on 50k records. You can reproduce this with `python manage.py seed --chamados 50000` followed by `python manage.py explicar`, which prints real `EXPLAIN ANALYZE` plans. There are 250 tests against real Postgres and Redis, with 98.7% coverage, and mypy runs in strict mode.
 
 Run it with `docker compose up --build` and then `python manage.py seed`. API docs are at `/docs/`. Licensed under MIT.

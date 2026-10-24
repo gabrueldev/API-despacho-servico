@@ -17,6 +17,8 @@ from apps.precos.tipos import TipoItem
 from core import idempotencia
 
 from .. import selectors, services
+from ..distancia import Distancia
+from ..distancia import medir as medir_distancia
 from ..models import Chamado, Status
 from .serializers import (
     AvancarSerializer,
@@ -74,10 +76,18 @@ class ChamadoListaView(generics.ListCreateAPIView[Chamado]):
         entrada = ChamadoCriarSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)
         usuario: Usuario = request.user  # type: ignore[assignment]
+        dados = services.NovoChamado(**entrada.validated_data)
+        medida: dict[str, Distancia] = {}
+
+        def preparar() -> None:
+            # Medir pode ser HTTP ao OSRM: fora da transação da idempotência, e um reenvio
+            # (resposta já gravada) nem chega aqui.
+            medida["distancia"] = medir_distancia(dados.origem, dados.destino)
 
         def operacao() -> idempotencia.Resultado:
+            # Sem Idempotency-Key, o próprio service mede, fora da transação dele.
             criado = services.criar_chamado(
-                atendente=usuario, dados=services.NovoChamado(**entrada.validated_data)
+                atendente=usuario, dados=dados, distancia=medida.get("distancia")
             )
             saida = ChamadoCriadoSerializer(criado.chamado, context={"itens": criado.itens})
             return idempotencia.Resultado(status.HTTP_201_CREATED, saida.data)
@@ -87,7 +97,11 @@ class ChamadoListaView(generics.ListCreateAPIView[Chamado]):
             resultado = operacao()
         else:
             resultado = idempotencia.executar(
-                usuario=usuario, chave=chave, dados=request.data, operacao=operacao
+                usuario=usuario,
+                chave=chave,
+                dados=request.data,
+                operacao=operacao,
+                preparar=preparar,
             )
         response = Response(resultado.corpo, status=resultado.status_code)
         if resultado.repetido:
