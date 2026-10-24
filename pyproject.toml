@@ -28,7 +28,7 @@ plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
 exclude = ["migrations/"]
 
 [[tool.mypy.overrides]]
-module = ["environ.*", "django_celery_beat.*"]
+module = ["environ.*", "django_celery_beat.*", "django_redis.*"]
 ignore_missing_imports = true
 
 # Testes: fixtures do pytest dispensam anotação.

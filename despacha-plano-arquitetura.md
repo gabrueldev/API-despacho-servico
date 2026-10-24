@@ -107,8 +107,8 @@ Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta
 
 ### Fluxo C — Atualizar localização do prestador
 1. O app envia `POST /prestadores/me/localizacao` a cada ~15 s (rota com **rate limit**).
-2. A posição vai **só para o Redis** (hash `prestador:{id}` com lat, lng e timestamp). O request não toca o Postgres e responde em ~1 ms.
-3. A cada **60 s**, uma tarefa do Beat (fila `pesada`) grava no Postgres, num único `UPDATE ... FROM (VALUES ...)`, só as posições que mudaram. Isso transforma milhares de escritas por minuto em uma.
+2. **Zero queries no Postgres** (garantido por teste): a autenticação é sem estado (`JWTStatelessUserAuthentication`; o `papel` vai como claim no JWT) e a posição vai **só para o Redis** (hash `loc:usuario:{id}` com lat, lng e timestamp). Um **script Lua** grava e, só se a posição mudou mais de ~1 m (5 casas decimais), marca o prestador como pendente — tudo numa ida ao Redis. Trade-off: um usuário desativado segue enviando até o access token expirar (15 min).
+3. A cada **60 s**, uma tarefa do Beat (fila `pesada`) esvazia os pendentes com `SPOP` em lotes de 1000 e grava cada lote no Postgres num único `UPDATE ... FROM (VALUES ...)`. Prestador parado não gera escrita. Se o lote falhar, os ids voltam para a fila.
 4. O rastreio lê a posição do Redis. A busca por proximidade usa o PostGIS, com posição de no máximo ~60 s atrás, o que é irrelevante num raio de 30 km.
 
 ### Fluxo D — Concluir e fechar
@@ -121,7 +121,7 @@ Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta
 
 1. **Concorrência no despacho:** trava pessimista (`select_for_update(nowait=True)`), porque o conflito é raro mas precisa ser 100% correto. Com `nowait`, quem perde recebe 409 na hora em vez de segurar conexão esperando (teste: < 0,5 s com a linha travada por outra transação). Testado com threads reais: 8 despachantes no mesmo chamado → 1 vence, 7 recebem 409, 1 evento; mesmo prestador em 2 chamados → só 1 despacho. O campo `version` é usado pela trava otimista nas demais transições e no timeout de aceite.
 2. **Idempotência:** com `Idempotency-Key` (escopo usuário + chave), se o cliente reenviar a requisição por falha de rede, o chamado não é criado duas vezes. A resposta é gravada **na mesma transação** do chamado; o reenvio custa 1 SELECT e volta com o header `Idempotent-Replayed: true`. Dois envios **simultâneos** com a mesma chave: o segundo esbarra na constraint única, a operação dele é desfeita inteira e ele devolve a resposta do primeiro. Mesma chave com corpo diferente → 422. Só sucesso é gravado (um 422 pode ser corrigido e reenviado). As chaves expiram em 24 h; a limpeza periódica pelo Beat entra na etapa 5. Tarefas Celery também são idempotentes.
-3. **Retry com backoff:** notificações com falha são reenviadas com intervalo crescente.
+3. **Retry com backoff:** notificações com falha transitória são reenviadas com intervalo crescente (2 s, 4 s, 8 s… até 5 min, com jitter, 6 tentativas). A notificação é **idempotente por chave** (`despachado:{chamado}:{version}`): a marca de "enviada" fica no Redis e só é gravada após o sucesso, então reentrega (`acks_late`) não duplica e retry não pula o envio. O timeout de aceite não lê nada do banco: o UPDATE condicional por `version` decide sozinho (2 UPDATEs + 1 INSERT); timeout atrasado de um despacho antigo não desfaz um redespacho.
 4. **Sem N+1:** listagens usam `select_related("cliente", "prestador")` e `prefetch_related("itens")`; testes com `assertNumQueries` garantem o número de queries.
 5. **Dinheiro em `Decimal`:** nunca `float`; cálculo feito no back-end e testado.
 6. **Paginação por cursor:** estável e rápida em tabelas grandes, sem `COUNT(*)` nem `OFFSET`. A ordenação `(criado_em, id)` bate com os índices.

@@ -140,8 +140,16 @@ CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = None
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True  # tarefas são idempotentes: reentregar é seguro
+CELERY_TASK_SOFT_TIME_LIMIT = 60
+CELERY_TASK_TIME_LIMIT = 90
 CELERY_TASK_DEFAULT_QUEUE = "notificacoes"
-CELERY_TASK_ROUTES: dict[str, dict[str, str]] = {}
+CELERY_TASK_ROUTES = {
+    "apps.chamados.tasks.*": {"queue": "critica"},
+    "core.tasks.notificar": {"queue": "notificacoes"},
+    "core.tasks.limpar_idempotency_keys": {"queue": "pesada"},
+    "apps.prestadores.tasks.*": {"queue": "pesada"},
+}
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_TIMEZONE = TIME_ZONE
 
@@ -151,6 +159,18 @@ RAIO_BUSCA_KM = env.int("RAIO_BUSCA_KM", default=30)
 RASTREIO_VALIDADE_HORAS = env.int("RASTREIO_VALIDADE_HORAS", default=24)
 LOCALIZACAO_FLUSH_SEGUNDOS = env.int("LOCALIZACAO_FLUSH_SEGUNDOS", default=60)
 IDEMPOTENCY_TTL_HORAS = env.int("IDEMPOTENCY_TTL_HORAS", default=24)
+NOTIFICADOR = env("NOTIFICADOR", default="core.notificacoes.LogNotificador")
+
+CELERY_BEAT_SCHEDULE = {
+    "gravar-localizacoes": {
+        "task": "apps.prestadores.tasks.gravar_localizacoes",
+        "schedule": float(LOCALIZACAO_FLUSH_SEGUNDOS),
+    },
+    "limpar-idempotency-keys": {
+        "task": "core.tasks.limpar_idempotency_keys",
+        "schedule": 60.0 * 60,
+    },
+}
 
 LOGGING = {
     "version": 1,

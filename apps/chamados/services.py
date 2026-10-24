@@ -196,7 +196,7 @@ def despachar(*, usuario: Usuario, chamado_id: int, prestador_id: int) -> Chamad
         if chamado.status != Status.ABERTO:
             raise Conflito(f"Chamado já está {Status(chamado.status).label.lower()}.")
         prestador: Prestador = _travar_sem_esperar(
-            Prestador.objects.only("id", "disponivel"), prestador_id, "Prestador"
+            Prestador.objects.only("id", "usuario_id", "disponivel"), prestador_id, "Prestador"
         )
         if not prestador.disponivel:
             raise Conflito("Prestador indisponível.", codigo="prestador_indisponivel")
@@ -209,7 +209,53 @@ def despachar(*, usuario: Usuario, chamado_id: int, prestador_id: int) -> Chamad
             prestador_id=prestador.pk,
         )
         Prestador.objects.filter(pk=prestador.pk).update(disponivel=False)
+        transaction.on_commit(lambda: _apos_despacho(chamado, prestador))
     return chamado
+
+
+def _apos_despacho(chamado: Chamado, prestador: Prestador) -> None:
+    # Import local: tasks importa services.
+    from core.tasks import notificar
+
+    from .tasks import expirar_aceite
+
+    expirar_aceite.apply_async(
+        kwargs={
+            "chamado_id": chamado.pk,
+            "version": chamado.version,
+            "prestador_id": prestador.pk,
+        },
+        countdown=settings.ACEITE_TIMEOUT_SEGUNDOS,
+    )
+    notificar.delay(
+        usuario_id=prestador.usuario_id,
+        tipo="chamado_despachado",
+        dados={"chamado_id": chamado.pk},
+        chave=f"despachado:{chamado.pk}:{chamado.version}",
+    )
+
+
+def expirar_aceite(*, chamado_id: int, version: int, prestador_id: int) -> bool:
+    """Devolve o chamado para a fila se o prestador não aceitou a tempo.
+
+    Zero leituras: o UPDATE condicional por `version` (a do despacho) já decide. Se o
+    prestador aceitou, recusou ou o chamado foi cancelado, a version mudou → 0 linhas →
+    nada acontece. Por isso a task é idempotente e pode ser reentregue sem risco.
+    """
+    chamado = Chamado(pk=chamado_id, status=Status.DESPACHADO, version=version)
+    try:
+        with transaction.atomic():
+            transicionar(
+                chamado,
+                Status.ABERTO,
+                usuario=None,
+                dados={"motivo": "timeout_aceite", "prestador_id": prestador_id},
+                prestador_id=None,
+            )
+            _liberar_prestador(prestador_id)
+    except Conflito:
+        return False
+    return True
 
 
 def aceitar(*, usuario: Usuario, chamado_id: int) -> Chamado:
