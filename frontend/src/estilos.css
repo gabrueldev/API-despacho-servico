@@ -1,0 +1,855 @@
+/* Despacha — vocabulário visual da rodovia: verde de placa, âmbar de giroflex, asfalto, concreto.
+   Overpass descende da Highway Gothic, a fonte das placas de estrada. */
+
+:root {
+  --asfalto: #262b2f;
+  --asfalto-suave: #4a5258;
+  --concreto: #e8ebe6;
+  --superficie: #ffffff;
+  --linha: #c6ccc4;
+  --verde: #0b6e4f;
+  --verde-escuro: #08553d;
+  --giroflex: #f5a300;
+  --giroflex-claro: #fff1cc;
+  --alerta: #c8102e;
+  --alerta-claro: #fde7ea;
+  --mercosul: #003399;
+
+  --raio: 6px;
+  --fonte: "Overpass", "Helvetica Neue", Arial, sans-serif;
+  --painel-largura: 380px;
+
+  color-scheme: light;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--concreto);
+  color: var(--asfalto);
+  font-family: var(--fonte);
+  font-size: 1rem;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+#raiz {
+  min-height: 100%;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+  margin: 0 0 0.5rem;
+}
+h2 {
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+h3 {
+  font-size: 1rem;
+  font-weight: 800;
+  margin-top: 1.25rem;
+}
+p {
+  margin: 0 0 0.75rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--giroflex);
+  outline-offset: 2px;
+}
+
+/* ---- botões e formulários ---------------------------------------------------------------- */
+
+.botao {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.5em 1em;
+  border: 2px solid var(--asfalto);
+  border-radius: var(--raio);
+  background: var(--superficie);
+  color: var(--asfalto);
+  cursor: pointer;
+}
+.botao:hover:not(:disabled) {
+  background: var(--concreto);
+}
+.botao:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+.botao--primario {
+  background: var(--verde);
+  border-color: var(--verde);
+  color: #fff;
+}
+.botao--primario:hover:not(:disabled) {
+  background: var(--verde-escuro);
+}
+.botao--grande {
+  width: 100%;
+  font-size: 1.15rem;
+  padding: 0.85em 1em;
+}
+.botao--fantasma {
+  background: transparent;
+  border-color: rgb(255 255 255 / 0.4);
+  color: #fff;
+}
+.botao--fantasma:hover:not(:disabled) {
+  background: rgb(255 255 255 / 0.1);
+}
+
+.link {
+  color: var(--verde);
+  font-weight: 600;
+}
+
+.formulario {
+  display: grid;
+  gap: 0.75rem;
+}
+.formulario label {
+  display: grid;
+  gap: 0.25rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.formulario input,
+.formulario select,
+.entrar__prestador input {
+  font: inherit;
+  padding: 0.55em 0.7em;
+  border: 2px solid var(--linha);
+  border-radius: var(--raio);
+  background: var(--superficie);
+  color: var(--asfalto);
+}
+.formulario input:focus,
+.formulario select:focus {
+  border-color: var(--verde);
+}
+.formulario--linha {
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  align-items: end;
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--linha);
+}
+
+.aviso {
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--raio);
+  border-left: 4px solid;
+  margin: 0.75rem 0;
+}
+.aviso--ok {
+  background: #e3f2ec;
+  border-color: var(--verde);
+}
+.aviso--erro {
+  background: var(--alerta-claro);
+  border-color: var(--alerta);
+}
+
+.vazio {
+  color: var(--asfalto-suave);
+  padding: 1rem;
+}
+.vazio--grande {
+  background: var(--superficie);
+  border: 2px dashed var(--linha);
+  border-radius: var(--raio);
+  padding: 1.5rem;
+  text-align: center;
+}
+
+/* ---- placa Mercosul: o elemento de identidade do produto -------------------------------------- */
+
+.placa {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 6.4em;
+  border: 2px solid #1a1a1a;
+  border-radius: 4px;
+  background: #fff;
+  overflow: hidden;
+  font-size: 0.95rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.placa__faixa {
+  background: var(--mercosul);
+  color: #fff;
+  font-size: 0.45em;
+  font-weight: 600;
+  letter-spacing: 0.3em;
+  text-align: center;
+  padding: 0.25em 0 0.2em 0.3em;
+}
+.placa__caracteres {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 0.22em 0.35em 0.12em;
+  color: #1a1a1a;
+}
+.placa--grande {
+  font-size: 1.5rem;
+}
+
+/* ---- status ------------------------------------------------------------------------------- */
+
+.status {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.1em 0.55em;
+  border-radius: 999px;
+  border: 1.5px solid currentColor;
+  white-space: nowrap;
+}
+.status--ABERTO {
+  color: #8a5a00;
+  background: var(--giroflex-claro);
+}
+.status--DESPACHADO {
+  color: var(--asfalto);
+  background: var(--giroflex);
+  border-color: var(--giroflex);
+}
+.status--ACEITO,
+.status--A_CAMINHO,
+.status--NO_LOCAL,
+.status--EM_ATENDIMENTO {
+  color: #fff;
+  background: var(--verde);
+  border-color: var(--verde);
+}
+.status--CONCLUIDO {
+  color: var(--asfalto-suave);
+}
+.status--CANCELADO {
+  color: var(--alerta);
+}
+
+/* ---- topo --------------------------------------------------------------------------------- */
+
+.topo {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--asfalto);
+  color: #fff;
+}
+.topo__marca {
+  font-weight: 800;
+  font-size: 1.15rem;
+  padding: 0.1em 0.5em;
+  background: var(--verde);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 2px var(--asfalto), inset 0 0 0 3.5px #fff;
+}
+.topo__titulo {
+  font-weight: 600;
+}
+.topo__quem {
+  margin-left: auto;
+  opacity: 0.85;
+}
+.topo__sair {
+  padding: 0.3em 0.8em;
+}
+
+/* ---- entrar ------------------------------------------------------------------------------- */
+
+.entrar {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: var(--asfalto);
+}
+.entrar__cartao {
+  width: min(100%, 26rem);
+  background: var(--superficie);
+  border-radius: 10px;
+  padding: 2rem 1.5rem;
+}
+.entrar__marca {
+  display: inline-block;
+  font-size: 2rem;
+  font-weight: 800;
+  color: #fff;
+  background: var(--verde);
+  padding: 0.15em 0.6em 0.05em;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 3px var(--verde), inset 0 0 0 5px #fff;
+  margin-bottom: 0.25rem;
+}
+.entrar__lema {
+  color: var(--asfalto-suave);
+  margin-bottom: 1.5rem;
+}
+.entrar__demo {
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--linha);
+  display: grid;
+  gap: 0.6rem;
+}
+.entrar__demo h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+.entrar__demo p {
+  font-size: 0.9rem;
+  color: var(--asfalto-suave);
+  margin: 0;
+}
+.entrar__prestador {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.6rem;
+  align-items: end;
+}
+.entrar__prestador label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.entrar__prestador input {
+  width: 100%;
+}
+
+/* ---- painel do despachante ------------------------------------------------------------------- */
+
+.painel {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  grid-template-rows: auto 1fr;
+  height: 100dvh;
+}
+
+.fila {
+  overflow-y: auto;
+  background: var(--superficie);
+  border-right: 1px solid var(--linha);
+}
+.abas {
+  display: flex;
+  position: sticky;
+  top: 0;
+  background: var(--superficie);
+  border-bottom: 1px solid var(--linha);
+  z-index: 1;
+}
+.abas__aba {
+  flex: 1;
+  font: inherit;
+  font-weight: 600;
+  padding: 0.75rem 0.5rem;
+  background: none;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--asfalto-suave);
+  cursor: pointer;
+}
+.abas__aba[aria-selected="true"] {
+  color: var(--asfalto);
+  border-bottom-color: var(--verde);
+}
+.fila__lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.fila__item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "placa cliente"
+    "placa status"
+    "quando quando";
+  column-gap: 0.75rem;
+  row-gap: 0.15rem;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--concreto);
+  border-left: 4px solid transparent;
+  cursor: pointer;
+}
+.fila__item:hover {
+  background: #f5f7f3;
+}
+.fila__item[aria-current="true"] {
+  background: #eef5f1;
+  border-left-color: var(--verde);
+}
+.fila__item .placa {
+  grid-area: placa;
+}
+.fila__cliente {
+  grid-area: cliente;
+  font-weight: 600;
+}
+.fila__item .status {
+  grid-area: status;
+  justify-self: start;
+}
+.fila__quando {
+  grid-area: quando;
+  font-size: 0.8rem;
+  color: var(--asfalto-suave);
+  margin-top: 0.35rem;
+}
+
+.palco {
+  position: relative;
+  min-height: 0;
+  display: flex;
+}
+.palco > .mapa {
+  flex: 1;
+}
+.palco__dica {
+  position: absolute;
+  inset: auto 1rem 1rem 1rem;
+  max-width: 28rem;
+  margin: 0 auto;
+  background: var(--asfalto);
+  color: #fff;
+  padding: 0.75rem 1rem;
+  border-radius: var(--raio);
+  z-index: 500;
+  text-align: center;
+}
+
+.chamado {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  bottom: 1rem;
+  width: var(--painel-largura);
+  overflow-y: auto;
+  background: var(--superficie);
+  border-radius: 10px;
+  border: 1px solid var(--linha);
+  box-shadow: 0 16px 40px rgb(38 43 47 / 0.22);
+  padding: 1.25rem;
+  z-index: 500;
+}
+.chamado__cabeca,
+.atendimento__cabeca {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.chamado__cabeca h2,
+.atendimento__cabeca h2 {
+  margin-bottom: 0.15rem;
+}
+.chamado__numero {
+  font-size: 0.85rem;
+  color: var(--asfalto-suave);
+  margin: 0 0 0.3rem;
+}
+
+.ficha {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0 0 1rem;
+}
+.ficha dt {
+  color: var(--asfalto-suave);
+}
+.ficha dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.proximos__lista {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+.proximos__item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.35rem 0.35rem 0.6rem;
+  border: 1.5px solid var(--linha);
+  border-radius: var(--raio);
+}
+.proximos__item--escolhido {
+  border-color: var(--verde);
+  background: #eef5f1;
+}
+.proximos__nome {
+  flex: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0.25rem 0;
+  color: inherit;
+  cursor: pointer;
+}
+.proximos__nome span {
+  font-weight: 400;
+  color: var(--asfalto-suave);
+}
+
+.corrida {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  background: var(--giroflex-claro);
+  border-radius: var(--raio);
+  font-size: 0.92rem;
+}
+.corrida .botao {
+  width: 100%;
+}
+.corrida__resultado {
+  margin: 0.75rem 0 0;
+  padding-left: 1.2rem;
+  font-weight: 600;
+}
+
+.historico {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 0.9rem;
+  border-left: 2px solid var(--linha);
+}
+.historico li {
+  position: relative;
+  padding: 0.2rem 0 0.45rem;
+}
+.historico li::before {
+  content: "";
+  position: absolute;
+  left: calc(-0.9rem - 6px);
+  top: 0.55rem;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--verde);
+}
+.historico time {
+  display: inline-block;
+  width: 3.5rem;
+  color: var(--asfalto-suave);
+}
+
+/* ---- mapa --------------------------------------------------------------------------------- */
+
+.mapa {
+  position: relative;
+  min-height: 320px;
+  background: #dfe3dc;
+}
+.mapa .leaflet-container {
+  position: absolute;
+  inset: 0;
+  font-family: var(--fonte);
+}
+
+.marcador span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-weight: 800;
+  font-size: 0.85rem;
+  color: #fff;
+  border: 2.5px solid #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+}
+.marcador--origem span {
+  background: var(--verde);
+}
+.marcador--destino span {
+  background: var(--asfalto);
+}
+.marcador--livre span {
+  width: 18px;
+  height: 18px;
+  margin: 5px;
+  background: var(--giroflex);
+  border: 2px solid var(--asfalto);
+  cursor: pointer;
+}
+.marcador--destaque span {
+  transform: scale(1.5);
+  border-color: var(--verde);
+  border-width: 3px;
+}
+.marcador--ao-vivo span {
+  background: var(--giroflex);
+  border-color: var(--asfalto);
+  position: relative;
+}
+/* O único movimento automático da interface: o giroflex de quem está em atendimento. */
+.marcador--ao-vivo span::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 3px solid var(--giroflex);
+  animation: giroflex 1.6s ease-out infinite;
+}
+@keyframes giroflex {
+  from {
+    transform: scale(0.8);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+.trajeto {
+  stroke: var(--asfalto);
+  stroke-width: 3;
+  stroke-dasharray: 2 8;
+  stroke-linecap: round;
+}
+
+/* ---- app do prestador ---------------------------------------------------------------------- */
+
+.prestador {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.prestador__conteudo {
+  width: min(100%, 40rem);
+  margin: 0 auto;
+  padding: 1rem;
+  display: grid;
+  gap: 1.25rem;
+}
+.prestador__conteudo > .mapa {
+  height: 50vh;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.atendimento,
+.gps {
+  background: var(--superficie);
+  border-radius: 10px;
+  padding: 1.25rem;
+  border: 1px solid var(--linha);
+}
+.atendimento__endereco {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.atendimento__meta {
+  color: var(--asfalto-suave);
+  margin-bottom: 1.25rem;
+}
+.atendimento__acoes {
+  display: grid;
+  gap: 0.6rem;
+}
+.atendimento__prazo {
+  font-size: 0.9rem;
+  color: var(--asfalto-suave);
+  text-align: center;
+  margin: 0;
+}
+.itens {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1.25rem;
+}
+.itens caption {
+  text-align: left;
+  font-weight: 800;
+  margin-bottom: 0.4rem;
+}
+.itens th,
+.itens td {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--concreto);
+}
+.itens th {
+  text-align: left;
+  font-weight: 400;
+}
+.itens td {
+  text-align: right;
+  font-weight: 600;
+}
+.gps p {
+  color: var(--asfalto-suave);
+}
+.alternar {
+  display: inline-flex;
+  gap: 0.6rem;
+  align-items: center;
+  font-weight: 600;
+  cursor: pointer;
+}
+.alternar input {
+  width: 1.25rem;
+  height: 1.25rem;
+  accent-color: var(--verde);
+}
+.gps__restante {
+  margin: 0.6rem 0 0;
+}
+.recentes {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.recentes li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto auto;
+  column-gap: 0.75rem;
+  align-items: center;
+  background: var(--superficie);
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--raio);
+}
+.recentes li .placa {
+  grid-row: span 2;
+}
+.recentes li span:last-child {
+  grid-column: 2 / -1;
+  font-size: 0.85rem;
+  color: var(--asfalto-suave);
+}
+
+/* ---- acompanhamento público ------------------------------------------------------------------ */
+
+.acompanhar {
+  width: min(100%, 40rem);
+  margin: 0 auto;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+  min-height: 100dvh;
+  align-content: start;
+}
+.acompanhar > .mapa {
+  height: 55vh;
+  border-radius: 10px;
+  overflow: hidden;
+}
+/* A situação do atendimento como placa de rodovia: verde de indicação, âmbar de advertência. */
+.sinal {
+  background: var(--verde);
+  color: #fff;
+  border-radius: 12px;
+  padding: 1.4rem 1.5rem 1.2rem;
+  box-shadow: inset 0 0 0 5px var(--verde), inset 0 0 0 8px #fff;
+}
+.sinal h1 {
+  font-size: clamp(1.6rem, 6vw, 2.2rem);
+  font-weight: 800;
+  margin-bottom: 0.35rem;
+}
+.sinal p {
+  font-size: 1.1rem;
+  margin: 0;
+}
+.sinal--ABERTO,
+.sinal--DESPACHADO {
+  background: var(--giroflex);
+  color: var(--asfalto);
+  box-shadow: inset 0 0 0 5px var(--giroflex), inset 0 0 0 8px var(--asfalto);
+}
+.sinal--CANCELADO {
+  background: var(--alerta);
+  box-shadow: inset 0 0 0 5px var(--alerta), inset 0 0 0 8px #fff;
+}
+.sinal--neutro {
+  background: var(--asfalto);
+  box-shadow: inset 0 0 0 5px var(--asfalto), inset 0 0 0 8px #fff;
+}
+.ficha--centro {
+  background: var(--superficie);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+/* ---- telas estreitas ------------------------------------------------------------------------ */
+
+@media (max-width: 900px) {
+  .painel {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
+    height: auto;
+    min-height: 100dvh;
+  }
+  .fila {
+    max-height: 40vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--linha);
+  }
+  .palco {
+    flex-direction: column;
+  }
+  .palco > .mapa {
+    flex: none;
+    height: 45vh;
+  }
+  .chamado {
+    position: static;
+    width: auto;
+    border-radius: 0;
+    box-shadow: none;
+    border: 0;
+  }
+  .palco__dica {
+    position: static;
+    margin: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marcador--ao-vivo span::after {
+    animation: none;
+    opacity: 0.5;
+  }
+}

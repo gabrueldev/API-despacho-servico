@@ -166,6 +166,7 @@ class RastreioSerializer(serializers.Serializer[Any]):
     status = serializers.ChoiceField(choices=Status.choices)
     placa = serializers.CharField()
     origem = serializers.DictField(child=serializers.FloatField())
+    destino = serializers.DictField(child=serializers.FloatField())
     prestador = PrestadorRastreioSerializer(allow_null=True)
     expira_em = serializers.DateTimeField(allow_null=True)
 
@@ -176,7 +177,7 @@ class LancarItemSerializer(serializers.Serializer[Any]):
             (t.value, t.label) for t in (TipoItem.PEDAGIO, TipoItem.ESPERA, TipoItem.ADICIONAL)
         ]
     )
-    descricao = serializers.CharField(max_length=120, required=False, default="")
+    descricao = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
     valor = serializers.DecimalField(
         max_digits=10, decimal_places=2, min_value=Decimal("0.01"), required=False
     )

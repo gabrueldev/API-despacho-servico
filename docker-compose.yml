@@ -62,10 +62,19 @@ services:
     <<: *app
     command: celery -A config beat -l info
 
+  # Demonstração: move os guinchos livres a cada 20 s para o mapa do despachante ter vida.
+  # docker compose --profile demo up   (depois de rodar o seed)
+  frota:
+    <<: *app
+    profiles: [demo]
+    command: python manage.py simular_frota
+
+  # Front (build do Vite) + proxy da API. Abra http://localhost:8000/entrar
   nginx:
-    image: nginx:1.27-alpine
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - static:/static:ro
     ports:
       - "8000:80"

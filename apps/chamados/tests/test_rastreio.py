@@ -33,6 +33,7 @@ def test_rastreio_publico_com_posicao_do_prestador_a_caminho() -> None:
         -46.656,
     )
     assert "telefone" not in body["prestador"]
+    assert body["destino"] == {"lat": chamado.destino.y, "lng": chamado.destino.x}
 
 
 def test_chamado_aberto_nao_tem_prestador() -> None:

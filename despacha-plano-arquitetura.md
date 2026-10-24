@@ -155,6 +155,7 @@ POST   /chamados/{id}/concluir
 POST   /chamados/{id}/cancelar
 
 GET    /prestadores/proximos?lat=&lng=&raio=   (despachante, atendente) 1 query, KNN no GiST
+GET    /prestadores/me             (prestador) perfil + última posição, 1 query
 POST   /prestadores/me/localizacao (rate limit)
 GET    /rastreio/{token}           público, sem login (link para o associado)
 
@@ -206,6 +207,7 @@ despacha/
    - `manage.py explicar`: `EXPLAIN (ANALYZE, BUFFERS)` dos mesmos selectors/SQL da API, para qualquer pessoa reproduzir os números do README. Ele mostra a 2ª execução, porque a 1ª de cada conexão paga a carga do PostGIS, e com o pool isso não se repete.
    - CI com runner fixo (`ubuntu-24.04`), actions atualizadas, piso de cobertura de 95% e cancelamento de execuções superadas.
 9. **Rota por estrada:** `RotaOSRM` (httpx com keep-alive, cache, plano B e circuit breaker), campo `distancia_fonte` e OSRM no Docker Compose (`--profile rota`: baixa o mapa do Geofabrik, pré-processa com MLD e serve). Testado contra um servidor HTTP falso real (sucesso, cache, timeout, conexão recusada, 5xx, sem rota) e de ponta a ponta com o OSRM real sobre o mapa do Sudeste.
+10. **Front-end:** React 19 + Vite + TypeScript em `frontend/`, servido pelo Nginx (build multi-stage) na mesma origem da API. Três telas: painel do despachante (fila, mapa com os mais próximos, despacho e a corrida de dois despachos mostrando o 409), app do prestador (passos do atendimento, itens e simulador de GPS) e o acompanhamento público do cliente. Para isso a API ganhou `GET /prestadores/me`, o destino no rastreio e o comando `simular_frota`. O `seed` passou a calcular a distância a partir das coordenadas. CI com job do front e `nginx -t` na imagem.
 
 ---
 
@@ -302,6 +304,5 @@ DB_POOL_MAX=10
 ### Fora do MVP (próximas versões)
 
 - WhatsApp Business API real e geocoding de endereços
-- Painel web / app do prestador
 - Avaliação de prestadores, antifraude e indicadores
 - Multiempresa (várias assistências)

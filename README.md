@@ -1,12 +1,12 @@
 # Despacha
 
-API de despacho de serviços (guincho, entregas, manutenção) em **Python / Django**. Foi feita para mostrar na prática concorrência, filas, banco otimizado, segurança, testes e arquitetura em camadas.
+API de despacho de serviços (guincho, entregas, manutenção) em **Python / Django**. Foi feita para mostrar na prática concorrência, filas, banco otimizado, segurança, testes e arquitetura em camadas. Vem com um front em React para ver tudo funcionando: o painel do despachante, o app do prestador e a página de acompanhamento do cliente.
 
 [![CI](https://github.com/gabrueldev/API-despacho-servico/actions/workflows/ci.yml/badge.svg)](https://github.com/gabrueldev/API-despacho-servico/actions/workflows/ci.yml)
 
-**Stack:** Django 5.2 + DRF · PostgreSQL 16 + PostGIS · Redis 7 · Celery 5 + Beat · OSRM (rota por estrada) · Nginx + Gunicorn · Docker Compose · GitHub Actions · pytest
+**Stack:** Django 5.2 + DRF · PostgreSQL 16 + PostGIS · Redis 7 · Celery 5 + Beat · OSRM (rota por estrada) · React 19 + Vite + TypeScript + Leaflet · Nginx + Gunicorn · Docker Compose · GitHub Actions · pytest + Vitest
 
-**Números:** 250 testes, cobertura de 98,7% (o CI exige ≥ 95%), mypy `strict`. Todas as queries de leitura quente rodam abaixo de **0,25 ms** sobre 50 mil chamados (veja [Desempenho](#desempenho)).
+**Números:** 261 testes no back-end, com cobertura de 98,8% (o CI exige ≥ 95%), e 16 no front; mypy e TypeScript `strict`. Todas as queries de leitura quente rodam abaixo de **0,25 ms** sobre 50 mil chamados (veja [Desempenho](#desempenho)).
 
 Plano e decisões completas em [`despacha-plano-arquitetura.md`](despacha-plano-arquitetura.md).
 
@@ -17,6 +17,8 @@ cp .env.example .env
 docker compose up --build
 docker compose exec api python manage.py seed        # dados de demonstração
 ```
+
+Abra **http://localhost:8000/entrar**. A tela de login tem botões para entrar direto com as contas de demonstração.
 
 O `seed` é determinístico (semente fixa) e cria:
 
@@ -75,6 +77,38 @@ python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/celery -A config beat -l info
 ```
 
+## Front-end
+
+Fica em `frontend/`: React 19, Vite e TypeScript strict, com Leaflet e mapa do OpenStreetMap. Em produção, o Nginx serve o build (multi-stage em `nginx/Dockerfile`) e encaminha as rotas da API para o Django, tudo na mesma origem, sem CORS.
+
+| Tela | Quem usa | O que mostra |
+|---|---|---|
+| `/painel` | despachante | Fila de chamados abertos (atualiza a cada 5 s) e mapa com a retirada, a entrega e os guinchos livres mais próximos (KNN). Despacha com um clique. O botão **"Despachar os 2 mais próximos ao mesmo tempo"** dispara duas requisições juntas: uma leva o chamado e a outra recebe **409**, a trava `NOWAIT` vista na tela. Depois do despacho, o mapa segue o guincho ao vivo |
+| `/prestador` | prestador | Chamado atual com um botão para cada passo (aceitar, saí, cheguei, iniciar, concluir), lançamento de pedágio, espera e adicional, e um **simulador de GPS** que anda até a retirada e depois até a entrega, enviando a posição para a API |
+| `/acompanhar/{token}` | cliente (público) | O link de rastreio: status em forma de placa de estrada, placa do veículo mascarada, distância até o cliente e o guincho no mapa. Para de consultar quando o atendimento termina |
+
+Para ver o fluxo completo: entre como despachante numa aba e despache um chamado. Em outra aba, entre como o prestador escolhido; a sessão é por aba, então as duas convivem. Ligue o simulador de GPS e avance os passos. O painel e o link do cliente acompanham sozinhos.
+
+Algumas decisões:
+
+- **Sessão em `sessionStorage`**, uma por aba. O cliente HTTP renova o access token sozinho, numa renovação só para várias requisições que recebem 401 juntas: com a rotação do refresh, uma segunda renovação paralela falharia.
+- **Polling com TanStack Query** (5 s, igual ao cache do rastreio) em vez de WebSocket: a API continua sem estado e o Nginx não precisa de mais nada.
+- **Cada tela em um chunk** (`React.lazy`): quem abre o link de rastreio no celular baixa só a página dele.
+- O chamado aberto no painel fica na URL (`/painel?chamado=123`), então dá para recarregar a página ou compartilhar o link.
+- Para o mapa ter movimento, rode `python manage.py simular_frota` (ou `docker compose --profile demo up`): ele move os guinchos livres a cada 20 s pelo mesmo caminho da API (Redis e gravação em lote).
+
+Desenvolvimento, com a API rodando em `127.0.0.1:8000`:
+
+```bash
+cd frontend
+npm install
+npm run dev          # http://localhost:5173, o Vite repassa as rotas da API para o Django
+npm test             # Vitest
+npm run build        # tsc + build de produção em dist/
+```
+
+Se a API estiver em outro endereço, use `DESPACHA_API=http://host:porta npm run dev`.
+
 ## Endpoints
 
 Documentação interativa em **`/docs/`** (Swagger) e schema OpenAPI em `/schema/`. Autenticação por JWT: access de 15 min e refresh de 7 dias, com rotação.
@@ -91,6 +125,7 @@ Documentação interativa em **`/docs/`** (Swagger) e schema OpenAPI em `/schema
 | `POST /chamados/{id}/status` | prestador | `A_CAMINHO` → `NO_LOCAL` → `EM_ATENDIMENTO` |
 | `POST /chamados/{id}/itens` | prestador, despachante | Lança pedágio, espera (em minutos) ou adicional |
 | `POST /chamados/{id}/concluir` · `cancelar` | prestador · equipe | Conclui (valor final = soma dos itens) ou cancela (taxa de saída a partir de `A_CAMINHO`) |
+| `GET /prestadores/me` | prestador | Perfil e última posição (do Redis, ou a gravada no banco), em 1 query |
 | `POST /prestadores/me/localizacao` | prestador | Posição atual: zero queries no Postgres (JWT sem estado + Redis), gravada em lote pelo Beat. 6/min |
 | `GET /prestadores/proximos?lat=&lng=&raio=` | despachante, atendente | Disponíveis no raio, do mais próximo ao mais distante (KNN no GiST parcial) |
 | `GET /rastreio/{token}` | público | Link do associado: status, placa mascarada e posição do prestador. Cache de 5 s, 410 quando expira |
@@ -169,9 +204,9 @@ docker compose exec api pytest --cov=apps --cov=core
 docker compose exec api ruff check . && docker compose exec api mypy .
 ```
 
-- **250 testes** contra PostgreSQL/PostGIS e Redis reais (sem SQLite nem mocks de banco), com cobertura de 98,7%.
+- **261 testes** contra PostgreSQL/PostGIS e Redis reais (sem SQLite nem mocks de banco), com cobertura de 98,8%.
 - **Concorrência de verdade:** os testes de corrida usam threads e conexões separadas, com uma `Barrier` para disparar todas juntas. Foram executados 25 vezes seguidas sem nenhuma falha intermitente.
-- **CI** (`.github/workflows/ci.yml`, runner fixo `ubuntu-24.04`): lint, formatação, mypy strict, migrations em dia, schema OpenAPI sem avisos e testes com piso de 95% de cobertura.
+- **CI** (`.github/workflows/ci.yml`, runner fixo `ubuntu-24.04`): lint, formatação, mypy strict, migrations em dia, schema OpenAPI sem avisos e testes com piso de 95% de cobertura. No front: tipos, Vitest, build e a imagem do Nginx validada com `nginx -t`.
 
 ## Estrutura
 
@@ -186,6 +221,8 @@ apps/
   financeiro/    fechamentos mensais gerados em SQL (INSERT ... SELECT em CTE)
 core/            idempotência, paginação por cursor, erros padronizados, notificações,
                  health e comandos `seed` / `explicar`
+frontend/        React + Vite + TS: api/ (cliente HTTP e sessão), paginas/, componentes/, lib/
+nginx/           Dockerfile (build do front + Nginx) e nginx.conf
 ```
 
 **Regra de ouro:** as views só recebem e respondem; os **services** decidem; os **selectors** consultam.
@@ -200,8 +237,9 @@ core/            idempotência, paginação por cursor, erros padronizados, noti
 | `beat` | Tarefas agendadas (`django-celery-beat`) |
 | `db` | PostgreSQL 16 + PostGIS |
 | `redis` | Broker, cache, rate limit e última posição dos prestadores |
-| `nginx` | Proxy reverso, gzip e arquivos estáticos |
+| `nginx` | Serve o front, faz proxy da API, gzip e arquivos estáticos |
 | `osrm-mapa` → `osrm-preparo` → `osrm` | Profile `rota`: baixa o mapa, pré-processa uma vez e serve as rotas |
+| `frota` | Profile `demo`: move os guinchos livres a cada 20 s (`simular_frota`) |
 
 ---
 

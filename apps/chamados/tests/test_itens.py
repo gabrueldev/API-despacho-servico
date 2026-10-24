@@ -26,6 +26,7 @@ def _url(chamado: Chamado) -> str:
     ("payload", "tipo", "total"),
     [
         ({"tipo": "PEDAGIO", "valor": "12.40"}, "PEDAGIO", "12.40"),
+        ({"tipo": "PEDAGIO", "valor": "12.40", "descricao": ""}, "PEDAGIO", "12.40"),  # formulário
         ({"tipo": "ESPERA", "minutos": 35}, "ESPERA", "45.00"),  # 3 frações × 15 min × R$ 60/h
         ({"tipo": "ADICIONAL", "valor": "80.00", "descricao": "patins"}, "ADICIONAL", "80.00"),
     ],

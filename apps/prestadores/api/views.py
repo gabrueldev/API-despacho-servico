@@ -11,9 +11,11 @@ from rest_framework_simplejwt.authentication import JWTStatelessUserAuthenticati
 
 from apps.contas.models import Papel
 from apps.contas.permissions import tem_papel
+from core.exceptions import NaoEncontrado
 from core.fields import PontoField
 
 from .. import localizacao, selectors
+from ..models import Prestador
 
 
 class LocalizacaoSerializer(serializers.Serializer[Any]):
@@ -43,6 +45,54 @@ class MinhaLocalizacaoView(APIView):
         usuario_id: int = request.user.pk  # type: ignore[assignment]
         mudou = localizacao.registrar(usuario_id, lat=ponto.y, lng=ponto.x)
         return Response({"mudou": mudou})
+
+
+class MinhaPosicaoSerializer(serializers.Serializer[Any]):
+    lat = serializers.FloatField()
+    lng = serializers.FloatField()
+    registrado_em = serializers.CharField(allow_null=True)
+
+
+class MeuPerfilSerializer(serializers.Serializer[Any]):
+    id = serializers.IntegerField()
+    nome = serializers.CharField()
+    disponivel = serializers.BooleanField()
+    posicao = MinhaPosicaoSerializer(allow_null=True)
+
+
+class MeuPerfilView(APIView):
+    """Quem sou e onde estou: 1 query (índice único de `usuario_id`) + 1 leitura no Redis.
+
+    A posição vem do Redis (a mais recente); sem ela, a última gravada no banco.
+    """
+
+    permission_classes = [tem_papel(Papel.PRESTADOR)]
+
+    @extend_schema(responses=MeuPerfilSerializer)
+    def get(self, request: Request) -> Response:
+        usuario_id: int = request.user.pk  # type: ignore[assignment]
+        prestador = (
+            Prestador.objects.only("id", "nome", "disponivel", "localizacao")
+            .filter(usuario_id=usuario_id)
+            .first()
+        )
+        if prestador is None:
+            raise NaoEncontrado("Este usuário não tem cadastro de prestador.")
+        posicao = localizacao.ultima_posicao(usuario_id)
+        if posicao is None and prestador.localizacao:
+            posicao = {
+                "lat": prestador.localizacao.y,
+                "lng": prestador.localizacao.x,
+                "registrado_em": None,
+            }
+        return Response(
+            {
+                "id": prestador.pk,
+                "nome": prestador.nome,
+                "disponivel": prestador.disponivel,
+                "posicao": posicao,
+            }
+        )
 
 
 class ProximosQuerySerializer(serializers.Serializer[Any]):

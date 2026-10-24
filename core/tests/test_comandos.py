@@ -1,3 +1,4 @@
+from decimal import Decimal
 from io import StringIO
 
 import pytest
@@ -5,6 +6,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db.models import Sum
 
+from apps.chamados.distancia import LinhaRetaPostGIS
 from apps.chamados.models import Chamado, Status
 from apps.contas.models import Usuario
 from apps.financeiro.models import Fechamento
@@ -88,3 +90,11 @@ def test_explicar_filtra_por_nome() -> None:
     call_command("explicar", so="rastreio", stdout=saida)
 
     assert saida.getvalue().count("== ") == 1
+
+
+def test_seed_distancia_bate_com_as_coordenadas() -> None:
+    _seed()
+
+    for c in Chamado.objects.order_by("id")[:20]:
+        postgis = LinhaRetaPostGIS().medir(c.origem, c.destino).km
+        assert abs(c.distancia_km - postgis) <= postgis * Decimal("0.005") + Decimal("0.01")

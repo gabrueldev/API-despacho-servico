@@ -78,6 +78,7 @@ def rastreio(token: str) -> dict[str, object]:
             "status",
             "placa",
             "origem",
+            "destino",
             "rastreio_expira_em",
             "prestador__nome",
             "prestador__usuario_id",
@@ -98,6 +99,7 @@ def rastreio(token: str) -> dict[str, object]:
         "status": chamado.status,
         "placa": mascarar_placa(chamado.placa),
         "origem": {"lat": chamado.origem.y, "lng": chamado.origem.x},
+        "destino": {"lat": chamado.destino.y, "lng": chamado.destino.x},
         "prestador": {"nome": prestador.nome, "posicao": posicao} if prestador else None,
         "expira_em": chamado.rastreio_expira_em,
     }

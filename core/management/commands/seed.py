@@ -4,6 +4,7 @@ Determinístico (semente fixa) e rápido: tudo em `bulk_create`, um único hash 
 todos os usuários e as datas espalhadas por um UPDATE no banco.
 """
 
+import math
 import random
 from decimal import Decimal
 from typing import Any
@@ -51,6 +52,17 @@ ATIVOS = (
     Status.EM_ATENDIMENTO,
 )
 ENDERECOS = ("Av. Paulista", "Rua Augusta", "Av. Rebouças", "Marginal Tietê", "Av. do Estado")
+
+
+def _km_linha_reta(a: Point, b: Point) -> Decimal:
+    """Haversine em Python: o mesmo que a API grava com `LINHA_RETA`, sem uma query por chamado
+    (a diferença para o elipsoide do PostGIS fica abaixo de 0,5%)."""
+    lat1, lat2 = math.radians(a.y), math.radians(b.y)
+    h = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(math.radians(b.x - a.x) / 2) ** 2
+    )
+    return Decimal(2 * 6371.0088 * math.asin(math.sqrt(h))).quantize(Decimal("0.01"))
 
 
 class Command(BaseCommand):
@@ -202,7 +214,13 @@ class Command(BaseCommand):
                 status = Status.CONCLUIDO
             cliente = rng.choice(clientes)
             tabela = tabela_por_cliente[cliente.pk]
-            distancia = Decimal(rng.uniform(3, 120)).quantize(Decimal("0.01"))
+            origem = Point(
+                CENTRO[1] + rng.uniform(-0.3, 0.3), CENTRO[0] + rng.uniform(-0.3, 0.3), srid=4326
+            )
+            destino = Point(
+                origem.x + rng.uniform(-0.45, 0.45), origem.y + rng.uniform(-0.45, 0.45), srid=4326
+            )
+            distancia = _km_linha_reta(origem, destino)
             previstos = calculo.itens_deslocamento(tabela, distancia)
             valor_previsto = calculo.total(previstos)
 
@@ -227,9 +245,6 @@ class Command(BaseCommand):
                         )
                     ]
 
-            origem = Point(
-                CENTRO[1] + rng.uniform(-0.3, 0.3), CENTRO[0] + rng.uniform(-0.3, 0.3), srid=4326
-            )
             chamado = Chamado(
                 cliente=cliente,
                 atendente=equipe[Papel.ATENDENTE],
@@ -239,9 +254,7 @@ class Command(BaseCommand):
                 f"{rng.randint(0, 9)}{rng.choice('ABCDEFGHJ0123456789')}{rng.randint(10, 99)}",
                 endereco_origem=f"{rng.choice(ENDERECOS)}, {rng.randint(1, 3000)}",
                 origem=origem,
-                destino=Point(
-                    origem.x + rng.uniform(-0.2, 0.2), origem.y + rng.uniform(-0.2, 0.2), srid=4326
-                ),
+                destino=destino,
                 distancia_km=distancia,
                 valor_previsto=valor_previsto,
                 valor_final=valor_final,
@@ -352,4 +365,4 @@ class Command(BaseCommand):
             f"e prestador1@ … @{DOMINIO}"
         )
         if exemplo:
-            self.stdout.write(f"Rastreio de exemplo: /rastreio/{exemplo}")
+            self.stdout.write(f"Acompanhamento de exemplo (front): /acompanhar/{exemplo}")
