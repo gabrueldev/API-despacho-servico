@@ -9,8 +9,9 @@ from rest_framework.response import Response
 from rest_framework.serializers import BaseSerializer
 from rest_framework.views import APIView
 
-from apps.contas.models import Papel
+from apps.contas.models import Papel, Usuario
 from apps.contas.permissions import tem_papel
+from core import idempotencia
 
 from .. import selectors, services
 from ..models import Chamado, Status
@@ -22,6 +23,7 @@ from .serializers import (
     ChamadoDetalheSerializer,
     ChamadoEstadoSerializer,
     ChamadoListaSerializer,
+    DespacharSerializer,
     RecusarSerializer,
 )
 
@@ -29,6 +31,7 @@ PODE_VER = tem_papel(Papel.ATENDENTE, Papel.DESPACHANTE, Papel.PRESTADOR)
 PODE_CRIAR = tem_papel(Papel.ATENDENTE)
 SO_PRESTADOR = tem_papel(Papel.PRESTADOR)
 PODE_CANCELAR = tem_papel(Papel.ATENDENTE, Papel.DESPACHANTE)
+PODE_DESPACHAR = tem_papel(Papel.DESPACHANTE)
 
 
 class ChamadoListaView(generics.ListCreateAPIView[Chamado]):
@@ -48,16 +51,41 @@ class ChamadoListaView(generics.ListCreateAPIView[Chamado]):
     def get(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         return super().get(request, *args, **kwargs)
 
-    @extend_schema(request=ChamadoCriarSerializer, responses={201: ChamadoCriadoSerializer})
+    @extend_schema(
+        request=ChamadoCriarSerializer,
+        responses={201: ChamadoCriadoSerializer},
+        parameters=[
+            OpenApiParameter(
+                "Idempotency-Key",
+                location=OpenApiParameter.HEADER,
+                required=False,
+                description="Reenvio com a mesma chave devolve o mesmo chamado, sem duplicar.",
+            )
+        ],
+    )
     def post(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         entrada = ChamadoCriarSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)
-        criado = services.criar_chamado(
-            atendente=request.user,  # type: ignore[arg-type]
-            dados=services.NovoChamado(**entrada.validated_data),
-        )
-        saida = ChamadoCriadoSerializer(criado.chamado, context={"itens": criado.itens})
-        return Response(saida.data, status=status.HTTP_201_CREATED)
+        usuario: Usuario = request.user  # type: ignore[assignment]
+
+        def operacao() -> idempotencia.Resultado:
+            criado = services.criar_chamado(
+                atendente=usuario, dados=services.NovoChamado(**entrada.validated_data)
+            )
+            saida = ChamadoCriadoSerializer(criado.chamado, context={"itens": criado.itens})
+            return idempotencia.Resultado(status.HTTP_201_CREATED, saida.data)
+
+        chave = request.headers.get("Idempotency-Key")
+        if chave is None:
+            resultado = operacao()
+        else:
+            resultado = idempotencia.executar(
+                usuario=usuario, chave=chave, dados=request.data, operacao=operacao
+            )
+        response = Response(resultado.corpo, status=resultado.status_code)
+        if resultado.repetido:
+            response["Idempotent-Replayed"] = "true"
+        return response
 
 
 class ChamadoDetalheView(generics.RetrieveAPIView[Chamado]):
@@ -76,6 +104,24 @@ def _validar(serializer_class: type[BaseSerializer[Any]], request: Request) -> d
     serializer = serializer_class(data=request.data)
     serializer.is_valid(raise_exception=True)
     return serializer.validated_data  # type: ignore[no-any-return]
+
+
+class DespacharView(APIView):
+    permission_classes = [PODE_DESPACHAR]
+
+    @extend_schema(
+        request=DespacharSerializer,
+        responses={200: ChamadoEstadoSerializer, 409: dict},
+        description="Trava chamado e prestador com NOWAIT; quem perde recebe 409 na hora.",
+    )
+    def post(self, request: Request, pk: int) -> Response:
+        dados = _validar(DespacharSerializer, request)
+        chamado = services.despachar(
+            usuario=request.user,  # type: ignore[arg-type]
+            chamado_id=pk,
+            prestador_id=dados["prestador_id"],
+        )
+        return _estado(chamado)
 
 
 class AceitarView(APIView):

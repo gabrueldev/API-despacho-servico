@@ -141,3 +141,7 @@ class CancelarSerializer(serializers.Serializer[Any]):
 
 class AvancarSerializer(serializers.Serializer[Any]):
     status = serializers.ChoiceField(choices=[(s.value, s.label) for s in AVANCOS_DO_PRESTADOR])
+
+
+class DespacharSerializer(serializers.Serializer[Any]):
+    prestador_id = serializers.IntegerField(min_value=1)

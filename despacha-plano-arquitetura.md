@@ -68,7 +68,7 @@ Qualquer status não encerrado ──► CANCELADO   (sem taxa até ACEITO; com 
 | **EventoChamado** | id, chamado_id, usuario_id, de_status, para_status, dados (JSON), criado_em |
 | **Fechamento** | id, tipo (CLIENTE / PRESTADOR), cliente_id (opcional), prestador_id (opcional), periodo_inicio, periodo_fim, total, status. `CHECK`: exatamente um dos dois preenchido. Os dois são FKs reais, então permitem índice e JOIN. |
 | **FechamentoItem** | fechamento_id, chamado_id, valor |
-| **IdempotencyKey** | usuario_id + chave (**únicos juntos**), hash_requisicao, status_code, resposta_salva, criado_em |
+| **IdempotencyKey** | usuario_id + chave (**únicos juntos**), hash_requisicao (SHA-256 do corpo), status_code, resposta (JSON), criado_em |
 
 **Relações:** Cliente 1—N Chamado · Prestador 1—N Chamado · Chamado 1—N ItemValor · Chamado 1—N EventoChamado · Fechamento 1—N FechamentoItem · Cliente N—1 TabelaPrecos.
 
@@ -119,8 +119,8 @@ Trade-off a explicar: índices aceleram leitura, mas deixam a escrita mais lenta
 
 ## 5. Decisões técnicas (o que explicar na entrevista)
 
-1. **Concorrência no despacho:** trava pessimista (`select_for_update(nowait=True)`), porque o conflito é raro mas precisa ser 100% correto. Com `nowait`, quem perde recebe 409 na hora em vez de segurar conexão esperando. O campo `version` é usado pela trava otimista nas tarefas em segundo plano (UPDATE condicional no timeout de aceite).
-2. **Idempotência:** com `Idempotency-Key`, se o cliente reenviar a requisição por falha de rede, o chamado não é criado duas vezes. A mesma chave com corpo diferente (`hash_requisicao`) retorna 422. As chaves expiram em 24 h e uma tarefa do Beat as apaga, para a tabela não crescer. Tarefas Celery também são idempotentes.
+1. **Concorrência no despacho:** trava pessimista (`select_for_update(nowait=True)`), porque o conflito é raro mas precisa ser 100% correto. Com `nowait`, quem perde recebe 409 na hora em vez de segurar conexão esperando (teste: < 0,5 s com a linha travada por outra transação). Testado com threads reais: 8 despachantes no mesmo chamado → 1 vence, 7 recebem 409, 1 evento; mesmo prestador em 2 chamados → só 1 despacho. O campo `version` é usado pela trava otimista nas demais transições e no timeout de aceite.
+2. **Idempotência:** com `Idempotency-Key` (escopo usuário + chave), se o cliente reenviar a requisição por falha de rede, o chamado não é criado duas vezes. A resposta é gravada **na mesma transação** do chamado; o reenvio custa 1 SELECT e volta com o header `Idempotent-Replayed: true`. Dois envios **simultâneos** com a mesma chave: o segundo esbarra na constraint única, a operação dele é desfeita inteira e ele devolve a resposta do primeiro. Mesma chave com corpo diferente → 422. Só sucesso é gravado (um 422 pode ser corrigido e reenviado). As chaves expiram em 24 h; a limpeza periódica pelo Beat entra na etapa 5. Tarefas Celery também são idempotentes.
 3. **Retry com backoff:** notificações com falha são reenviadas com intervalo crescente.
 4. **Sem N+1:** listagens usam `select_related("cliente", "prestador")` e `prefetch_related("itens")`; testes com `assertNumQueries` garantem o número de queries.
 5. **Dinheiro em `Decimal`:** nunca `float`; cálculo feito no back-end e testado.

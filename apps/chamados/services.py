@@ -5,9 +5,11 @@ from typing import Any
 
 from django.conf import settings
 from django.contrib.gis.geos import Point
-from django.db import transaction
-from django.db.models import F, Sum
+from django.core.exceptions import ObjectDoesNotExist
+from django.db import DatabaseError, transaction
+from django.db.models import F, QuerySet, Sum
 from django.utils import timezone
+from psycopg.errors import LockNotAvailable
 
 from apps.clientes.models import Cliente
 from apps.contas.models import Usuario
@@ -164,6 +166,50 @@ def transicionar(
 def _liberar_prestador(prestador_id: int | None) -> None:
     if prestador_id:
         Prestador.objects.filter(pk=prestador_id).update(disponivel=True)
+
+
+def _travar_sem_esperar(qs: QuerySet[Any], pk: int, nome: str) -> Any:
+    """`SELECT ... FOR UPDATE NOWAIT`: se outra transação já segura a linha, falha na hora.
+
+    Ninguém fica parado esperando trava — nem worker do gunicorn, nem conexão do pool.
+    """
+    try:
+        return qs.select_for_update(nowait=True).get(pk=pk)
+    except DatabaseError as exc:
+        if isinstance(exc.__cause__, LockNotAvailable):
+            raise Conflito(f"{nome} está sendo alterado por outra operação.") from exc
+        raise
+    except ObjectDoesNotExist as exc:
+        raise NaoEncontrado(f"{nome} não encontrado.") from exc
+
+
+def despachar(*, usuario: Usuario, chamado_id: int, prestador_id: int) -> Chamado:
+    """Trava pessimista: o conflito é raro, mas tem que ser 100% correto.
+
+    Trava chamado e prestador **sempre nessa ordem** (as outras escritas seguem a mesma
+    ordem), o que elimina deadlock. Quem perde recebe 409 imediatamente.
+    """
+    with transaction.atomic():
+        chamado: Chamado = _travar_sem_esperar(
+            Chamado.objects.only(*CAMPOS_ESTADO), chamado_id, "Chamado"
+        )
+        if chamado.status != Status.ABERTO:
+            raise Conflito(f"Chamado já está {Status(chamado.status).label.lower()}.")
+        prestador: Prestador = _travar_sem_esperar(
+            Prestador.objects.only("id", "disponivel"), prestador_id, "Prestador"
+        )
+        if not prestador.disponivel:
+            raise Conflito("Prestador indisponível.", codigo="prestador_indisponivel")
+
+        transicionar(
+            chamado,
+            Status.DESPACHADO,
+            usuario=usuario,
+            dados={"prestador_id": prestador.pk},
+            prestador_id=prestador.pk,
+        )
+        Prestador.objects.filter(pk=prestador.pk).update(disponivel=False)
+    return chamado
 
 
 def aceitar(*, usuario: Usuario, chamado_id: int) -> Chamado:
