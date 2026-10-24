@@ -2,7 +2,7 @@
 
 API de despacho de serviços (guincho, entregas, manutenção) em **Python / Django**, feita para demonstrar na prática concorrência, filas, banco otimizado, segurança, testes e arquitetura em camadas.
 
-> **Status:** em construção — etapa 1 (base) concluída. Plano completo em [`despacha-plano-arquitetura.md`](despacha-plano-arquitetura.md).
+> **Status:** em construção — etapas 1 (base) e 2 (domínio: preços, clientes, prestadores e criação de chamado) concluídas. Plano completo em [`despacha-plano-arquitetura.md`](despacha-plano-arquitetura.md).
 
 **Stack:** Django 5.2 + DRF · PostgreSQL 16 + PostGIS · Redis 7 · Celery 5 + Beat · Nginx + Gunicorn · Docker Compose · GitHub Actions · pytest
 
@@ -20,6 +20,18 @@ docker compose exec api python manage.py createsuperuser
 | http://localhost:8000/docs/ | Swagger |
 | http://localhost:8000/admin/ | Admin do Django |
 | `POST /auth/login` · `POST /auth/refresh` | JWT (access 15 min, refresh 7 dias com rotação) |
+| `POST /chamados` · `GET /chamados?status=&cursor=` · `GET /chamados/{id}` | Abrir, listar e detalhar chamados |
+
+### Sem Docker (macOS)
+
+```bash
+brew install postgresql@17 postgis redis
+brew services start postgresql@17 && brew services start redis
+createdb despacha
+cp .env.example .env   # ajuste DATABASE_URL/REDIS_URL para localhost e descomente GDAL/GEOS
+python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python manage.py migrate && .venv/bin/python manage.py runserver
+```
 
 ## Testes e qualidade
 
@@ -37,11 +49,12 @@ O CI (`.github/workflows/ci.yml`) roda lint, formatação, mypy, checagem de mig
 config/          settings, urls, celery
 apps/
   contas/        Usuario (login por e-mail), papéis, JWT, permissões
-  chamados/      ciclo de vida, despacho, cálculo   (etapas 2–4)
-  prestadores/   localização e proximidade         (etapas 5–6)
-  precos/        tabelas de preço                  (etapa 2)
+  clientes/      Cliente (contratante) → tabela de preços
+  chamados/      criação e consulta; ciclo de vida e despacho nas etapas 3–4
+  prestadores/   Prestador; localização e proximidade nas etapas 5–6
+  precos/        tabela de preços (cache Redis) e cálculo em Decimal
   financeiro/    itens e fechamentos               (etapa 7)
-core/            paginação por cursor, health, utilitários
+core/            paginação por cursor, erros padronizados, health, PontoField
 ```
 
 **Regra de ouro:** views só recebem e respondem; **services** decidem; **selectors** consultam.

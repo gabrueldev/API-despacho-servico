@@ -12,7 +12,10 @@ extend-exclude = ["**/migrations/*"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "DJ", "S", "SIM", "RUF"]
-ignore = ["RUF001", "RUF002", "RUF003"]  # acentos em strings/comentários em português
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # acentos em strings/comentários em português
+    "RUF012",  # listas em `class Meta` são o padrão do Django
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S106"]
@@ -25,12 +28,18 @@ plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
 exclude = ["migrations/"]
 
 [[tool.mypy.overrides]]
-module = ["environ.*", "factory.*", "django_celery_beat.*"]
+module = ["environ.*", "django_celery_beat.*"]
 ignore_missing_imports = true
 
+# Testes: fixtures do pytest dispensam anotação.
 [[tool.mypy.overrides]]
-module = ["tests.*", "apps.*.tests.*"]
+module = ["tests.*", "apps.*.tests.*", "conftest"]
 disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+check_untyped_defs = false
+# `Factory()` é tipado como a factory, não o model (limitação do factory-boy).
+disable_error_code = ["attr-defined", "arg-type"]
 
 [tool.django-stubs]
 django_settings_module = "config.settings"

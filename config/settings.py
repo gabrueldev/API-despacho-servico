@@ -20,11 +20,13 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django.contrib.gis",
+    "django.contrib.postgres",
     "rest_framework",
     "drf_spectacular",
     "django_celery_beat",
     "core",
     "apps.contas",
+    "apps.clientes",
     "apps.chamados",
     "apps.prestadores",
     "apps.precos",
@@ -64,6 +66,10 @@ DATABASES = {"default": env.db("DATABASE_URL")}
 DATABASES["default"]["OPTIONS"] = {
     "pool": {"min_size": 2, "max_size": env.int("DB_POOL_MAX", default=10)},
 }
+
+# Só necessários fora do Docker (ex.: macOS com Homebrew).
+GDAL_LIBRARY_PATH = env("GDAL_LIBRARY_PATH", default=None)
+GEOS_LIBRARY_PATH = env("GEOS_LIBRARY_PATH", default=None)
 
 REDIS_URL = env("REDIS_URL")
 
@@ -105,6 +111,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "core.pagination.CriadoEmCursorPagination",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "EXCEPTION_HANDLER": "core.exceptions.exception_handler",
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {
         # App envia a cada 15 s (4/min); folga para reenvios.
@@ -125,6 +132,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "API de despacho de serviços (guincho, entregas, manutenção).",
     "VERSION": "0.1.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "ENUM_NAME_OVERRIDES": {"StatusChamadoEnum": "apps.chamados.models.Status"},
 }
 
 # Celery: filas separadas para um fechamento demorado nunca atrasar um timeout.

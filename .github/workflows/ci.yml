@@ -59,5 +59,8 @@ jobs:
       - name: Migrations em dia
         run: python manage.py makemigrations --check --dry-run
 
+      - name: Schema OpenAPI válido
+        run: python manage.py spectacular --validate --fail-on-warn --file /tmp/schema.yml
+
       - name: Testes
         run: pytest --cov=apps --cov=core --cov-report=term-missing

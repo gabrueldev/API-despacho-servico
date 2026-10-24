@@ -58,8 +58,8 @@ ABERTO ──► DESPACHADO ──► ACEITO ──► A_CAMINHO ──► NO_LO
 | **Cliente** (contratante, ex.: proteção veicular) | id, nome, cnpj, tabela_precos_id |
 | **TabelaPrecos** | id, nome, valor_saida, valor_km_excedente, km_franquia, valor_hora_espera |
 | **Prestador** | id, usuario_id (1:1), nome, telefone, disponivel, localizacao (Point/PostGIS), atualizado_em |
-| **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), valor_previsto, valor_final, criado_em, atualizado_em, **concluido_em**, **rastreio_token** (único), **rastreio_expira_em**, **version** |
-| **ItemValor** | id, chamado_id, tipo (SAIDA, KM_EXCEDENTE, PEDAGIO, ESPERA, ADICIONAL), descricao, quantidade, valor_unitario, total |
+| **Chamado** | id, cliente_id, atendente_id, prestador_id (opcional), status, placa, endereco_origem, origem (Point), destino (Point), **distancia_km**, valor_previsto, valor_final, criado_em, atualizado_em, **concluido_em**, **rastreio_token** (único), **rastreio_expira_em**, **version** |
+| **ItemValor** | id, chamado_id, tipo (SAIDA, KM_EXCEDENTE, PEDAGIO, ESPERA, ADICIONAL, TAXA_CANCELAMENTO), descricao, quantidade, valor_unitario, total |
 | **EventoChamado** | id, chamado_id, usuario_id, de_status, para_status, dados (JSON), criado_em |
 | **Fechamento** | id, tipo (CLIENTE / PRESTADOR), cliente_id (opcional), prestador_id (opcional), periodo_inicio, periodo_fim, total, status. `CHECK`: exatamente um dos dois preenchido. Os dois são FKs reais, então permitem índice e JOIN. |
 | **FechamentoItem** | fechamento_id, chamado_id, valor |
@@ -69,9 +69,12 @@ ABERTO ──► DESPACHADO ──► ACEITO ──► A_CAMINHO ──► NO_LO
 
 ### Índices
 
+- `Chamado(criado_em, id)` → listagem sem filtro (ordem da API), sem ordenar em memória.
 - `Chamado(status, criado_em, id)` → listagem por status. O `id` no fim serve de desempate para a **paginação por cursor**, e a ordenação da API é sempre `(criado_em, id)`.
 - **Índice parcial** `Chamado(criado_em, id) WHERE status NOT IN ('CONCLUIDO','CANCELADO')` → fila e painel operacional. Fica pequeno porque a maioria dos chamados já terminou.
-- `Chamado(prestador_id, status)` → "meus chamados"
+- `Chamado(prestador_id, criado_em, id)` → "meus chamados" já na ordem do cursor
+- FKs `cliente_id`, `prestador_id`, `atendente_id` **sem índice próprio** (`db_index=False`): os compostos acima já começam por elas, e cada índice a menos barateia INSERT/UPDATE.
+- `origem`/`destino` do chamado **sem GiST**: não há busca espacial em chamados.
 - `Chamado(cliente_id, concluido_em)` e `Chamado(prestador_id, concluido_em)` → fechamento. O período é filtrado pela data de conclusão, não pela de criação.
 - `Chamado(rastreio_token)` único → consulta pública de rastreio em O(log n)
 - **GiST parcial** `Prestador(localizacao) WHERE disponivel = true` → proximidade só entre prestadores livres, num índice só. Dois índices separados (GiST + parcial em `disponivel`) não se combinam bem.
@@ -162,6 +165,7 @@ despacha/
 ├── config/              settings, urls, celery.py
 ├── apps/
 │   ├── contas/          Usuario, papéis, JWT, permissões
+│   ├── clientes/        Cliente (contratante)
 │   ├── chamados/
 │   │   ├── models.py
 │   │   ├── services.py      ← regra de negócio (transições, despacho, cálculo)
@@ -212,10 +216,10 @@ Padrões adotados para o MVP. Qualquer item pode ser trocado depois sem mudar a 
 
 | # | Tema | Decisão |
 |---|---|---|
-| 1 | **Cálculo do valor** | `valor_saida` inclui **franquia de 40 km**. Acima disso, cobra `valor_km_excedente` por km. Espera cobrada por hora, **fracionada a cada 15 min**. Pedágio e adicionais lançados manualmente. Tudo em `Decimal`, arredondado para **2 casas** (`ROUND_HALF_UP`). |
-| 2 | **Distância** | **Linha reta** (PostGIS `ST_Distance` em geography). Interface `CalculadoraDistancia` permite plugar rota real (API de mapas) depois. |
+| 1 | **Cálculo do valor** | `valor_saida` inclui **franquia de 40 km**. Acima disso, cobra `valor_km_excedente` por **km inteiro iniciado** (arredonda para cima: 40,01 km → 1 km). Espera cobrada por hora, **fracionada a cada 15 min, arredondando para cima** (16 min → 0,5 h). Pedágio e adicionais lançados manualmente. Tudo em `Decimal`, arredondado para **2 casas** (`ROUND_HALF_UP`). |
+| 2 | **Distância** | **Linha reta da origem ao destino** (PostGIS `ST_Distance` em geography); o deslocamento do prestador até a origem está coberto pela saída. Calculada uma vez na criação e gravada em `distancia_km`. Interface `CalculadoraDistancia` permite plugar rota real (API de mapas) depois. |
 | 3 | **Escolha do prestador** | Prestadores **disponíveis** num **raio de 30 km**, ordenados por distância. O despachante escolhe na lista (sugestão automática = o mais próximo). |
-| 4 | **Cancelamento** | Sem taxa até `DESPACHADO`/`ACEITO`. A partir de `A_CAMINHO`, cobra **taxa de saída** (= `valor_saida` da tabela). `CONCLUIDO` não pode ser cancelado. |
+| 4 | **Cancelamento** | Sem taxa até `DESPACHADO`/`ACEITO`. A partir de `A_CAMINHO`, cobra **taxa de saída** (= `valor_saida` da tabela), lançada como `ItemValor` do tipo `TAXA_CANCELAMENTO`. `CONCLUIDO` não pode ser cancelado. |
 | 5 | **Fechamento** | **Mensal**, gerado automaticamente pelo Celery Beat no dia 1 às 03:00 (referente ao mês anterior). Também pode ser gerado manualmente via `POST /fechamentos/gerar`. Só entram chamados `CONCLUIDO` ou cancelados com taxa. |
 | 6 | **Tempos** | Aceite do prestador: **2 min** (senão volta para `ABERTO`). Envio de localização: **a cada 15 s**. Link de rastreio: válido até a **conclusão + 24 h**. |
 
