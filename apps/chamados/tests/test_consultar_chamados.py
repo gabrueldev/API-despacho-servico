@@ -2,9 +2,10 @@ from decimal import Decimal
 
 import pytest
 from django.contrib.gis.geos import Point
+from django.db import connection
 from django.urls import reverse
 
-from apps.chamados import services
+from apps.chamados import selectors, services
 from apps.chamados.models import Chamado
 from apps.contas.models import Papel
 from tests.factories import ClienteFactory, PrestadorFactory, UsuarioFactory
@@ -85,6 +86,20 @@ def test_prestador_ve_so_os_proprios(cliente_api) -> None:
     response = cliente_api(usuario=prestador.usuario).get(URL)
 
     assert {c["id"] for c in response.json()["results"]} == {c.pk for c in meus}
+
+
+def test_listagem_do_prestador_le_o_indice_em_ordem_sem_sort() -> None:
+    """Regressão: com JOIN em prestador o Postgres lia todo o histórico e ordenava."""
+    prestador = PrestadorFactory()
+    _criar(3, prestador=prestador)
+    qs = selectors.listar_chamados(prestador.usuario).order_by("-criado_em", "-id")[:51]
+    with connection.cursor() as cursor:
+        cursor.execute("SET LOCAL enable_seqscan = off")  # tabela pequena: força o plano real
+        cursor.execute("SET LOCAL enable_bitmapscan = off")
+    plano = qs.explain()
+
+    assert "Index Scan Backward using chamado_prestador_criado" in plano
+    assert "Sort" not in plano
 
 
 def test_financeiro_nao_acessa_chamados(cliente_api) -> None:

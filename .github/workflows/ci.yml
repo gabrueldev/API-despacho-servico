@@ -5,9 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+# Um push novo cancela a execução anterior do mesmo branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # fixo: atualização da imagem não muda o build sem aviso
 
     services:
       db:
@@ -35,12 +40,12 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Instalar GDAL
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gdal-bin libproj-dev
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -63,4 +68,4 @@ jobs:
         run: python manage.py spectacular --validate --fail-on-warn --file /tmp/schema.yml
 
       - name: Testes
-        run: pytest --cov=apps --cov=core --cov-report=term-missing
+        run: pytest --cov=apps --cov=core --cov-report=term-missing --cov-fail-under=95

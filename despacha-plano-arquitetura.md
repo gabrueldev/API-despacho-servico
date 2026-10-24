@@ -77,7 +77,7 @@ Qualquer status não encerrado ──► CANCELADO   (sem taxa até ACEITO; com 
 - `Chamado(criado_em, id)` → listagem sem filtro (ordem da API), sem ordenar em memória.
 - `Chamado(status, criado_em, id)` → listagem por status. O `id` no fim serve de desempate para a **paginação por cursor**, e a ordenação da API é sempre `(criado_em, id)`.
 - **Índice parcial** `Chamado(criado_em, id) WHERE status NOT IN ('CONCLUIDO','CANCELADO')` → fila e painel operacional. Fica pequeno porque a maioria dos chamados já terminou.
-- `Chamado(prestador_id, criado_em, id)` → "meus chamados" já na ordem do cursor
+- `Chamado(prestador_id, criado_em, id)` → "meus chamados" já na ordem do cursor. O filtro do prestador é uma **subquery escalar** (`prestador_id = (SELECT id … WHERE usuario_id = ?)`), não um JOIN: o Postgres a resolve antes (InitPlan) e usa o resultado como condição do índice, varrendo-o já em ordem até o LIMIT. Com o JOIN, o `EXPLAIN ANALYZE` mostrou que ele lia todo o histórico do prestador e ordenava em memória.
 - FKs `cliente_id`, `prestador_id`, `atendente_id` **sem índice próprio** (`db_index=False`): os compostos acima já começam por elas, e cada índice a menos barateia INSERT/UPDATE.
 - `origem`/`destino` do chamado **sem GiST**: não há busca espacial em chamados.
 - **Índice parcial** `Chamado(encerrado_em) WHERE encerrado_em IS NOT NULL` → fechamento. O período é filtrado pela data de encerramento (conclusão ou cancelamento com taxa), não pela de criação. Substituiu os compostos `(cliente_id, encerrado_em)` e `(prestador_id, encerrado_em)`: o fechamento varre o mês de **todos** os destinatários, e um índice que começa pelo destinatário não serve para esse filtro. Um índice no lugar de dois, e chamado em andamento nem entra nele.
@@ -201,6 +201,9 @@ despacha/
 6. **Proximidade e rastreio:** busca por raio e link público de rastreio.
 7. **Financeiro:** itens, valor final e fechamentos agendados (Celery Beat).
 8. **Acabamento:** OpenAPI/Swagger, README com as decisões e os `EXPLAIN ANALYZE`, cobertura de testes.
+   - `manage.py seed`: dados de demonstração determinísticos (semente fixa), em `bulk_create`, com um único hash de senha e as datas espalhadas por UPDATE no banco. 50 mil chamados levam cerca de 16 s.
+   - `manage.py explicar`: `EXPLAIN (ANALYZE, BUFFERS)` dos mesmos selectors/SQL da API, para qualquer pessoa reproduzir os números do README. Ele mostra a 2ª execução, porque a 1ª de cada conexão paga a carga do PostGIS, e com o pool isso não se repete.
+   - CI com runner fixo (`ubuntu-24.04`), actions atualizadas, piso de cobertura de 95% e cancelamento de execuções superadas.
 
 ---
 

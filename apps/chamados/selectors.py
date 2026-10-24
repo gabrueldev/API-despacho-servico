@@ -1,8 +1,9 @@
-from django.db.models import Prefetch, QuerySet
+from django.db.models import Prefetch, QuerySet, Subquery
 from django.utils import timezone
 
 from apps.contas.models import Papel, Usuario
 from apps.prestadores import localizacao
+from apps.prestadores.models import Prestador
 from core.exceptions import ErroDominio, NaoEncontrado
 
 from .models import Chamado, EventoChamado, Status
@@ -22,10 +23,17 @@ CAMPOS_LISTA = (
 
 
 def chamados_visiveis(usuario: Usuario) -> QuerySet[Chamado]:
-    """Prestador só enxerga os próprios chamados; atendente e despachante, todos."""
+    """Prestador só enxerga os próprios chamados; atendente e despachante, todos.
+
+    Subquery escalar em vez de JOIN: o Postgres a resolve antes (InitPlan) e usa
+    `prestador_id = $0` como condição do índice `chamado_prestador_criado`, que já entrega
+    em ordem de `criado_em` e para no LIMIT. Com o JOIN, ele lia todo o histórico do
+    prestador e ordenava em memória.
+    """
     qs = Chamado.objects.all()
     if usuario.papel == Papel.PRESTADOR:
-        qs = qs.filter(prestador__usuario_id=usuario.pk)
+        meu_id = Prestador.objects.filter(usuario_id=usuario.pk).values("id")[:1]
+        qs = qs.filter(prestador_id=Subquery(meu_id))
     return qs
 
 
